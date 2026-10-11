@@ -86,7 +86,7 @@ set(MMX4_COOP_CONTRACT_FILES
     src/mods/mmx4_coop_combat.c src/mods/mmx4_coop_assets.c src/mods/mmx4_coop_audio.c
     src/mods/mmx4_coop_internal.h src/mods/mmx4_coop_assets.h
     src/mods/mmx4_coop_views.c src/mods/mmx4_coop_views.h
-    src/mods/mmx4_coop_split.c
+    src/mods/mmx4_coop_split.c src/mods/mmx4_coop_web.c
     src/mods/mmx4_coop_debug_protocol.c src/mods/mmx4_coop_debug_protocol.h
     src/mods/mmx4_diagnostics.cpp src/mods/mmx4_diagnostics.h
     src/mods/mmx4_widescreen_plugin.c
@@ -162,6 +162,9 @@ if(BUILD_TESTING)
         src/mods/mmx4_coop_split.c src/mods/mmx4_coop_views.c)
     target_include_directories(mmx4_coop_split_test PRIVATE src/mods "${PSXRECOMP_V4_ROOT}/runtime/include")
     add_test(NAME mmx4_coop_split_test COMMAND mmx4_coop_split_test)
+    add_executable(mmx4_coop_web_test tests/test_mmx4_coop_web.c src/mods/mmx4_coop_web.c)
+    target_include_directories(mmx4_coop_web_test PRIVATE src/mods "${PSXRECOMP_V4_ROOT}/runtime/include")
+    add_test(NAME mmx4_coop_web_test COMMAND mmx4_coop_web_test)
     add_executable(mmx4_coop_background_test tests/test_mmx4_coop_background.c src/mods/mmx4_coop_views.c)
     target_include_directories(mmx4_coop_background_test PRIVATE src/mods "${PSXRECOMP_V4_ROOT}/runtime/include")
     add_test(NAME mmx4_coop_background_test COMMAND mmx4_coop_background_test)
@@ -179,6 +182,9 @@ if(BUILD_TESTING)
         add_test(NAME mmx4_coop_netplay_harness_test
             COMMAND "${Python3_EXECUTABLE}"
                     "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_mmx4_coop_netplay_harness.py")
+        add_test(NAME mmx4_coop_netplay_runtime_test
+            COMMAND "${Python3_EXECUTABLE}"
+                    "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_mmx4_netplay_runtime.py")
     endif()
     add_executable(mmx4_preloaded_mods_test
         tests/test_preloaded_mods.cpp

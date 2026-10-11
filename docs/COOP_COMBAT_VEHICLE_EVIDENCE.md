@@ -374,3 +374,192 @@ dies or rejoins elsewhere. Allocation reuse and stage reset clear ownership;
 pending origins participate in the co-op digest. Boundary tests cover both
 characters, distant P1, dead/repositioned P2 and reuse. Native color/origin
 confirmation remains with the owner.
+
+
+## Native dash trails and counterpart palette (2026-10-10)
+
+Native 80035240 seeds three 60-byte trails at80141AB0, with compressed
+body/assembly pointers, predecessor links at+50 and CLUTs780D/780E/780F
+(from800F8B3C). Clearing their whole structures during a transport disables
+future images. Cancel only+3 visibility and+4 update state; preserve the
+initializer's resource fields. qa-trails-baseline-23 has no native images
+after a shared room handoff; qa-trails-fixed-24 has three both before and
+after withdrawal and native arrival.
+
+COLxx_0X/0Z and COLxx_1X/1Z contain one type5 member,4096 bytes: the stage
+palette. X's trail slots have blue colors D103/BCA0/B040; Zero's are red
+8032/800E/8009. Counterpart enrollment now loads its own original COL
+palette out of band, then native player initialization applies its dynamic
+body colors. Copying P1's palette left the trail slots with the wrong
+character colors. qa-trail-colors-zero-26 and qa-trail-colors-x-27 verify
+both seat arrangements, private palettes and three visible native trails
+before and after withdrawal/rejoin. Original-disc bytes remain runtime
+inputs; no game asset is committed.
+
+
+Both characters' own body/shot/trail draw packets now use retained immutable
+textures. Primary native compressed-table offsets are mapped to the original
+retained PL archive, and its colors come from the current canonical palette.
+This avoids a full palette copy per frame. Counterpart colors use its private
+COL palette. Native common actors and vehicle-stage graphics retain their
+original rendering. qa-private-primary-render-31 passes train jump/dash
+frames, both Web Spider water pairs and three trails, P2-owned intro entry,
+and Cyber outer/inner arrivals. The exact helmet-only air-dash report remains
+item14 until the open-space airborne fixture is qualified.
+
+## Fatal doorway and committed arrival recovery (2026-10-10)
+
+qa-arrival-death-train-41 reproduces fatal C4 entry for each leading seat.
+The surviving partner inherits the original doorway at its current position,
+initializes native C4 auto-walk, and completes into the room at X729/Y2506-7.
+The dead entrant runs exactly one original death sequence; the survivor retains
+HP32, shared lives remain two, and both C0/C4 gates clear. Only the recovered
+door's controlled auto-walk suppresses crush terrain; normal door entries and
+ordinary terrain resume unchanged. The native death wrapper restores the
+actual preexisting global scene lock rather than inferring it from C4 ownership.
+
+The same run verifies a leader dying while its partner is visibly warping in:
+the arrival anchor remains in the new grounded room and the partner completes
+with HP32. Native train withdrawal/rejoin also completes on the original moving
+platform. The reported later connector-bomb train death sequence still needs
+its own qualification. All 16 title CTests pass this source version.
+
+qa-slash-pause-airdash-48 subsequently exercises native sequential P2/P1
+deaths at train checkpoints0 and2. Both original arrivals finish at platform
+Y394-395 and Y346-347 respectively; both players have HP32, normal action2,
+visible/active bodies, and grounded terrain. Each retry spends one shared life.
+Its open-space Jump/Right/Dash input also captures24 frames across three actual
+Zero air dashes (native action13); X's complete body remains visible in the
+inspected action13 captures, qualifying the immutable primary body rendering.
+
+## Slash Beast entrance and post-victory trails (2026-10-10)
+
+Original8006DC24 starts Slash Beast's intro when playerX>=9472. The waiting
+boss actor is atX9312, so nearest-player routing chooses the partner behind
+the advancing player. Select the leading living seat only for stage8/section1
+type54 state1/phase9/subphase0. Once C0 starts, normal script ownership keeps
+the intro stable; ordinary fight targeting stays nearest. Both-seat ownership
+tests and all16 title CTests pass. Native QA49/50 crosses the original trigger
+with controller input from the verified last-carriage platform atX9360.
+Both leading seats complete original warning/intro, partner arrival and fight
+with both HP32, both visible/normal, atX9473/Y394-395.
+
+QA49 additionally kills Jet with a real P2 attack after a bossHP1 setup,
+completes original reward/Save UI, and enters the train. Three red Zero trails
+remain visible before and after native withdrawal/rejoin.
+
+## Shared dialogue, pause fades and forward-section health (2026-10-10)
+
+Native8002217C saves and replaces64 textbox palette bytes at canonical
+scratchpad palette+2A0, sets80166BB0 dirty, and binds the shared script.
+A private AI projection previously discarded that dirty flag and kept the
+palette edit private. Run this global initialization canonically while
+preserving story campaign identity and the committing seat's dialogue input.
+Both-roster boundary tests prove the dirty flag survives and P2 resources
+remain unchanged. Native P2-first Slash dialogue captures still need a
+visible panel qualification; item9 remains open.
+
+When native pause fades render the world, also render the partner and HUD.
+QA51/52/54 each exercise four pause/resume sequences and long resumed P2
+attacks; both world-fade counters reach288 and advance on every pause.
+Frontend scene ownership is limited to gameplay/transition dispatcher modes;
+native Quit/current-data Continue and Escape/Save preserve both completed
+portraits after two real boss clears in QA50.
+
+Native80035240 fills HP from PLAY+46 for spawn policy0/-2 and preserves
+resources for-1. Carrying the partner's prior HP unconditionally cancelled
+that refill. Living forward-section arrivals now retain the initialized
+maximum; same-section checkpoints, carried corpses and withdrawal keep
+their old state. QA55 initializes Web Spider section1 with P2 HP8->32 and
+two shared lives. Both-roster boundary tests include the upgraded HP40 maximum,
+all three policies and preserved personal weapon/ammo. All16 title CTests pass.
+
+QA53/54 verify Ride Chaser ground Dash is native phase5 (air Dash is2), with
+changing rider frames and bike frame3 for both arrangements. The animation
+report is not reproduced; the mixed rider/bike/exhaust layering remains open.
+QA55 also performs P2-first Cyber outer entry followed immediately by either
+seat dashing during partner arrival:24 captures each, both arrive healthy,
+visible and unlocked. Further boss/event paths and timing qualification are
+tracked in items14/23.
+
+## Ride Chaser ownership and shared Cyber flips (2026-10-10)
+
+Secondary vehicle types56/57 defer updates through800AE3F4/800AE65C;
+800AE6B4 copies the singleton PLAYER coordinates. Remember the allocating
+seat before enrollment and select that seat for these actors, rather than
+nearest-player AI. Cleanup still advances after that rider dies; native slot
+reuse clears old ownership. Vehicle effects0C/0D/0F use the existing following
+source ownership. P2 rider/bike/exhaust packet priorities are offset4 during
+emission only, keeping each bundle together while restoring simulation fields.
+QA57/58 both-roster native bikes Dash with healthy draw captures; ownership
+tests include a nearer other rider, dead owner and slot reuse.
+
+Cyber General20 update800C4EC8 queries only PLAYER through the read-only
+8002BB80 collision test. Allow P2's query when P1 does not activate it.
+Native800C4F40 reflects PLAYER Y/previousY about2048, primary camera Y/targetY
+about1792, background cameras about2304, mirrors shared pools via800C5078,
+then togglesPLAY+26. Apply those same reflections once to the private partner
+body/active shots and saved Split cameras; keep any committed arrival anchor
+in the flipped room. No second shared-world update or script departure occurs.
+QA60's real P2/Zero switch flip and QA61's either-seat switches with X/P2
+finish both players visible/grounded/alive. Ownership tests verify one shared
+update, and two reflections preserve fractional body/camera coordinates exactly.
+All16 title CTests pass. Earlier probes at984/936 were transporters; teleporting
+into the switch's solid base at656/971 was unsafe. The qualified setup drops
+the activator from656/900, with ordinary native invulnerability expired.
+
+QA57 and QA58 manual additionally qualify P2-owned Cyber outer/inner doors,
+followed by each seat dashing through arrival:96 captures per roster, both
+healthy and unlocked. Uncapped hidden frame progression stays around113-131fps
+for idle/dashing windows; no severe slowdown is reproduced in those paths.
+Other equivalent events and netplay timing remain separate qualification.
+
+## Surviving-player death lock and Storm Owl section handoff (2026-10-10)
+
+QA62 reproduces the survivor lock after P1 dies at Storm Owl checkpoint4:
+P2 stays HP32/lives2, but PLAY+1C remains1. Native write tracing identifies
+80033C7C in80033BC8, before the death animation guard. Preserve the lock
+present before fatal detection when the other player has a living body;
+an outgoing/incoming passenger counts as living, while voluntary withdrawal
+and genuine corpses do not. Native team-wipe control locks are unchanged.
+
+QA63 manual / QA64 reach the original miniboss18 after genuine P1 death,
+then kill it with actual P2 Jump/attack after an HP1 setup and finish the
+native transfer into section1 with P2 HP32/two shared lives, P1 still dead,
+and global lock clear. Both character arrangements pass. QA64 additionally
+passes a leader dying during partner arrival, then each fatal doorway owner:
+survivor HP32, clear C0/C4 gates, exactly one native death sequence each.
+All16 title CTests pass, including ordinary/hidden living partners in both
+death orders and preservation of actual preexisting scene locks.
+
+The private checkpoint fixture now allows Storm Owl's verified original
+section0 entries0-4 and section1 entries0-1. Section0 entry5 actually starts
+section1's record list and is excluded. Original authored checkpoint4 is
+X5856/Y2048, camera5696/2048, and lands at2235/2234.
+
+## Elemental fragments and weapon fixtures (2026-10-10)
+
+Native Ryuenjin57 and Hyouretsuzan54 use Triangle with Up/Down; Square
+instead exercised ordinary saber48/air-spin56 in the first diagnostic probe.
+QA67 reproduces broken fragments after the real techniques. Particle48's
+80098474 deferred initializer reads the character assembly header6 from
+scratchpad+1C and the singleton player's position. Ice particle47 initializer
+8009485C also binds that character header. Zero/P2 particles were initialized
+with X/P1's assembly801ACC0C instead of their counterpart resources.
+
+Extend the existing allocation-time character/origin handling from death11
+to these two inspected initializers. Their later shared updates remain native
+and run once. QA68 shows proper blue ice shards rather than yellow/brown
+rectangles, binds Zero's retained private assembly9F09A9A8, and keeps flame
+and ice blade graphics healthy. QA69 verifies the corresponding native
+Zero/P1 techniques alongside X/P2. Inspected captures agree. All16 title
+CTests pass, including a dead/moved/rejoined allocator and original slot reuse.
+
+Development command7 selects a seat's native weapon and optionally unlocks
+the shared P1 campaign's boss progress. It runs37104/371E4 at the native
+boundary, and the existing admitted netplay packet can carry it without RAM
+writes. Python helper accepts `weapon SEAT WEAPON UNLOCK_ALL`; ordinary release
+netplay does not enable the development packet decoder. Both-decoder protocol
+tests verify the command fields agree. This removes repeated stage clears from
+native weapon/weakness qualification. Original PL archives were catalogued
+locally for diagnosis; no original assets are committed.

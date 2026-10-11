@@ -36,15 +36,20 @@ class Scenarios:
         row['checkpoint']=shared[0x1d]
         row['blocked']=self.r.read(0x801721dc,1)[0]
         mirror=self.r.read(self.r.diagnostic(),0x6d0)
+        row['plugin_failed']=struct.unpack_from('<I',mirror,12)[0]
+        assert not row['plugin_failed'],('Co-op renderer disabled',row)
         row['native_health']=[list(mirror[at+0x5c:at+0x5f]) for at in (0x300,0x100)]
         row['vehicle_health']=[mirror[at+0x5c] for at in (0x620,0x200)]
         row['campaign_health']=mirror[0x445]
         row['freeze']=mirror[0x410]
         row['warning']=self.r.read(0x80141bdc,1)[0]
         row['menu']=list(self.r.read(0x801754a4,2))
+        row['menu_detail']=list(self.r.read(0x801754a0,0x30))
+        row['frontend']=list(self.r.read(0x80173c70,8))
         row['personal_locks']=[[mirror[at+j] for j in (0x67,0xbc,0xc0,0xc3,0xc4)]
                                for at in (0x300,0x100)]
         row['orb_capture']=[mirror[at+0xba] for at in (0x300,0x100)]
+        row['camera_clip']=list(struct.unpack('<6h',self.r.read(0x801419cc,12)))
         row['bounds']=list(struct.unpack('<4h',self.r.read(0x801419d4,8)))
         if self.watch_enemy is not None:
             row['enemies']=[p for p in self.enemies() if p['type']==self.watch_enemy]
@@ -64,6 +69,7 @@ class Scenarios:
             p=pool[i*0x9c:(i+1)*0x9c]
             if p[0]:
                 result.append(dict(slot=i,type=p[1],hp=p[0x5c]&127,state=list(p[4:7]),
+                                   weakness=hex(struct.unpack_from('<I',p,0x58)[0]),reaction=p[0x63],
                                    timer=struct.unpack_from('<H',p,0x7c)[0],
                                    captured=p[0x8d],capture_timer=struct.unpack_from('<H',p,0x8a)[0],
                                    x=struct.unpack_from('<i',p,8)[0]/65536,
@@ -185,6 +191,395 @@ class Scenarios:
         self.door(1, 'cyber-p2-inner')
         return dict(outer=True, inner=True, passenger_alive=True)
 
+    def cyber_moving(self):
+        cases=[]
+        for owner in (1,0):
+            self.load(6,1,1)
+            self.r.teleport_both(568,2507)
+            self.r.teleport(owner,600,2507)
+            self.r.input(0xffdf,owner)
+            try:
+                self.wait('cyber-moving-entered-'+str(owner),
+                          lambda s:s['players'][owner]['door']!=0,8)
+                self.wait('cyber-moving-door-finished-'+str(owner),
+                          lambda s:not s['players'][owner]['door'] and not s['blocked'],20,True)
+                deadline=time.monotonic()+4
+                sample=0
+                while time.monotonic()<deadline:
+                    # Keep walking inside the room while the partner arrives.
+                    self.r.input(0xffdf if sample%2 else 0xff7f,owner)
+                    time.sleep(.15)
+                    row=self.sample('cyber-moving-arrival-'+str(owner),sample%4==0)
+                    assert all(p['hp']>0 for p in row['players']),row
+                    if all(p['active'] and p['visible'] and p['state']==1 and
+                           not p['door'] and not p['script'] for p in row['players']) and \
+                       row['players'][owner^1]['action']==2:
+                        cases.append(dict(owner=owner,arrival=row))
+                        break
+                    sample+=1
+                else:raise AssertionError(('Partner did not arrive with moving leader',row))
+            finally:self.r.release()
+        return dict(moving_leaders=cases)
+
+    def handoff_dash(self):
+        cases=[]
+        for dash_seat in (1,0):
+            self.load(6,1,1)
+            self.r.teleport_both(568,2507);self.r.teleport(1,600,2507)
+            frames=[]
+            for door_index in (0,1):
+                self.r.input(0xffdf,1)
+                try:
+                    self.wait('handoff-dash-entered-%d-%d'%(dash_seat,door_index),lambda s:s['players'][1]['door'],8)
+                    self.wait('handoff-dash-released-%d-%d'%(dash_seat,door_index),lambda s:
+                        not s['players'][1]['door'] and not s['blocked'],20,True)
+                finally:self.r.release()
+                for frame in range(24):
+                    # Dash throughout the passenger arrival, alternating
+                    # direction inside the native boss antechamber.
+                    direction=0xffdf if frame%8<4 else 0xff7f
+                    self.r.input(direction & 0xdfff,dash_seat);time.sleep(.035)
+                    self.r.release();time.sleep(.035)
+                    frames.append(self.sample('handoff-dash-%d-%d-%d'%(dash_seat,door_index,frame),True))
+                self.wait('handoff-dash-arrived-%d-%d'%(dash_seat,door_index),lambda s:
+                    not s['blocked'] and all(p['active'] and p['visible'] and p['hp'] and
+                    p['state']==1 and p['action']>=2 and not p['door'] and not p['script']
+                    for p in s['players']),20,True)
+            row=self.wait('handoff-dash-both-ready-'+str(dash_seat),lambda s:
+                not s['blocked'] and all(p['active'] and p['visible'] and p['hp'] and
+                p['state']==1 and p['action']>=2 and not p['door'] and not p['script']
+                for p in s['players']),10,True)
+            self.sample('handoff-dash-finished-'+str(dash_seat),True)
+            assert any(f['players'][dash_seat]['action'] in (12,13) for f in frames),('No native dash',dash_seat)
+            timings=[]
+            for active in (False,True):
+                start=self.r.request('get_registers')['frame'];begin=time.monotonic()
+                while time.monotonic()-begin<2:
+                    if active:self.r.input((0xffdf if int((time.monotonic()-begin)*4)%2 else 0xff7f)&0xdfff,dash_seat)
+                    time.sleep(.05);self.r.release();time.sleep(.05)
+                end=self.r.request('get_registers')['frame'];elapsed=time.monotonic()-begin
+                timings.append(dict(dashing=active,frames=end-start,seconds=elapsed,fps=(end-start)/elapsed,
+                    phase=self.r.request('phase_profile',window=2)))
+            cases.append(dict(dash_seat=dash_seat,frames=len(frames),ready=row['players'],timings=timings))
+        return dict(p2_door_both_dash_seats=cases)
+
+    def cyber_flip_probe(self):
+        owner=getattr(self,'flip_owner',1)
+        self.load(6,1)
+        self.r.fixture(5,0)
+        diag=self.r.diagnostic()
+        self.wait('cyber-flip-native-invulnerability-cleared',lambda s:
+            not self.r.read(diag+0x161,1)[0] and not self.r.read(diag+0x361,1)[0],5)
+        self.r.teleport_both(850,971);self.r.teleport(owner,656,900)
+        rows=[]
+        for frame in range(20):
+            row=self.sample('cyber-flip-probe-%d-%d'%(owner,frame),True)
+            assert all(p['hp']>0 for p in row['players']),('Unsafe flip setup',row['players'])
+            row['flip']=self.r.read(0x801721c0+0x26,1)[0]
+            row['pools']={}
+            for name,address,stride,count in (('general',0x80165a30,0x8c,32),('particles',0x80173ca0,0x60,64)):
+                data=self.r.read(address,stride*count)
+                row['pools'][name]=[dict(slot=i,type=p[1],state=list(p[:8]),
+                    x=struct.unpack_from('<i',p,8)[0]/65536,y=struct.unpack_from('<i',p,12)[0]/65536,
+                    raw=p.hex()) for i in range(count) if (p:=data[i*stride:(i+1)*stride])[0]]
+            rows.append(row)
+            self.r.input(0xbfff if frame%5==0 else 0xffff,owner);time.sleep(.08);self.r.release()
+        (self.output/('cyber-flip-probe-%d.json'%owner)).write_text(json.dumps(rows,indent=2),encoding='utf-8')
+        self.r.fixture(5,3)
+        return dict(owner=owner,frames=len(rows),flips=sorted({r['flip'] for r in rows}),ready=rows[-1]['players'])
+
+    def cyber_flip(self):
+        cases=[]
+        for owner in (1,0):
+            self.flip_owner=owner
+            result=self.cyber_flip_probe()
+            assert result['flips']==[1],result
+            assert all(p['active'] and p['visible'] and p['grounded'] and p['hp']>0
+                       for p in result['ready']),result
+            cases.append(result)
+        return dict(native_shared_flip_switches=cases)
+
+    def storm_warp(self):
+        self.watch_enemy=18
+        self.r.request('wtrace_range',lo='0x0014192f',hi='0x00141930')
+        self.r.request('wtrace_add',lo='0x001721dc',hi='0x001721dd')
+        self.r.request('wtrace_clear')
+        self.load(2,0,4)
+        self.wait('storm-last-platform',lambda s:all(p['grounded'] and p['hp']>0 for p in s['players']),10)
+        self.r.fixture(2,0,0x80)
+        before=self.wait('storm-p1-dead-p2-alive',lambda s:s['players'][0]['state']==3 and
+            not s['players'][0]['hp'] and s['players'][1]['hp']>0,10)
+        self.sample('storm-surviving-p2-before-door',True)
+        (self.output/'storm-before-door-writes.json').write_text(json.dumps(
+            self.r.request('wtrace_dump',count=4096),indent=2),encoding='utf-8')
+        self.r.input(0xffdf,1)
+        try:
+            self.wait('storm-p2-miniboss-entry',lambda s:any(e['type']==18 and e['hp']>1
+                for e in self.enemies()),25,True)
+        finally:self.r.release()
+        self.wait('storm-miniboss-controls-ready',lambda s:not s['blocked'] and not s['warning'] and
+            s['players'][1]['action']>=2 and not s['players'][1]['script'] and not s['players'][1]['door'],25,True)
+        boss=next(e for e in self.enemies() if e['type']==18 and e['hp']>1)
+        self.sample('storm-miniboss-before-native-death',True)
+        self.r.fixture(6,boss['slot'],1)
+        for attempt in range(8):
+            target=next((e for e in self.enemies() if e['type']==18 and e['hp']>0),None)
+            if not target:break
+            self.r.teleport(1,int(target['x'])-40,2235)
+            self.r.input(0xbfff,1);time.sleep(.18)
+            self.r.input(0x7fff,1);time.sleep(.12);self.r.release();time.sleep(.15)
+        # The actual native hit/death, not a fabricated section flag, owns
+        # the forward transition.
+        self.r.input(0xffdf,1)
+        try:
+            after=self.wait('storm-p2-forward-section',lambda s:s['stage']==2 and s['section']==1 and
+                s['mode'][:2]==[6,0] and s['players'][1]['active'] and s['players'][1]['visible'] and
+                s['players'][1]['state']==1 and s['players'][1]['action']>=2 and not s['blocked'],35,True)
+        finally:self.r.release()
+        after=self.wait('storm-p2-section2-grounded',lambda s:s['stage']==2 and s['section']==1 and
+            not s['blocked'] and s['players'][1]['grounded'] and s['players'][1]['action']==2 and
+            not s['personal_locks'][1][0],8)
+        assert after['players'][0]['hp']==0 and after['players'][1]['hp']>0,after
+        assert after['lives']==before['lives'],after
+        self.sample('storm-surviving-p2-section2',True)
+        self.watch_enemy=None
+        return dict(native_p2_section_transfer=True,before=before['players'],after=after['players'],lives=after['lives'])
+
+    def section_health(self):
+        self.load(1,0)
+        self.r.fixture(2,1,8)
+        before=self.sample('section-low-p2-health',True)
+        assert before['players'][1]['hp']==8,before
+        lives=before['lives']
+        self.load(1,1)
+        after=self.sample('section-refilled-p2-health',True)
+        maximum=self.r.read(self.r.diagnostic()+0x446,1)[0]
+        assert after['players'][1]['hp']==maximum,(maximum,after)
+        assert after['lives']==lives,after
+        return dict(before=before['players'],after=after['players'],maximum=maximum,lives=lives)
+
+    def dash_effects(self):
+        self.load(1,0)
+        self.r.teleport_both(500,427);self.r.teleport(1,580,427)
+        self.wait('dash-effects-grounded',lambda s:all(p['grounded'] for p in s['players']),5)
+        rows=[]
+        for seat in (1,0):
+            self.r.input(0xdfdf,seat)
+            try:
+                for frame in range(14):
+                    row=self.sample('dash-effects-%d-%d'%(seat,frame),True)
+                    data=self.r.read(0x8013e510,32*0x70)
+                    row['effects']=[]
+                    for slot in range(32):
+                        e=data[slot*0x70:(slot+1)*0x70]
+                        if e[0]:row['effects'].append(dict(slot=slot,type=e[1],state=list(e[4:7]),
+                            x=struct.unpack_from('<i',e,8)[0]/65536,y=struct.unpack_from('<i',e,12)[0]/65536,
+                            parent=hex(struct.unpack_from('<I',e,0x50)[0]),priority=e[0x16],
+                            assembly=hex(struct.unpack_from('<I',e,0x3c)[0])))
+                    rows.append(row);time.sleep(.015)
+            finally:self.r.release()
+        (self.output/'dash-effects.json').write_text(json.dumps(rows,indent=2),encoding='utf-8')
+        return dict(frames=len(rows),types=sorted({e['type'] for row in rows for e in row['effects']}))
+
+    def zero_elemental(self):
+        self.load(1,0)
+        zero=self.campaign^1
+        self.r.fixture(7,zero,0,1)
+        self.r.teleport_both(56,139);self.r.teleport(zero,112,139)
+        self.wait('elemental-both-grounded',lambda s:all(p['grounded'] for p in s['players']),5)
+        rows=[]
+        for move in ('fire','ice'):
+            self.r.teleport(zero,112,139)
+            if move=='ice':
+                self.r.input(0xbfff,zero);time.sleep(.2)
+            # Zero's techniques use Triangle; Square is the ordinary saber
+            # combo/air spin and does not reproduce the elemental report.
+            self.r.input(0xefef if move=='fire' else 0xefbf,zero)
+            try:
+                for frame in range(12):
+                    row=self.sample('zero-%s-%d'%(move,frame),True)
+                    data=self.r.read(0x8013e510,32*0x70)
+                    row['effects']=[dict(slot=i,type=p[1],state=list(p[:8]),
+                        x=struct.unpack_from('<i',p,8)[0]/65536,y=struct.unpack_from('<i',p,12)[0]/65536,
+                        parent=hex(struct.unpack_from('<I',p,0x50)[0]),sprites=hex(struct.unpack_from('<I',p,0x38)[0]),
+                        assembly=hex(struct.unpack_from('<I',p,0x3c)[0]))
+                        for i in range(32) if (p:=data[i*0x70:(i+1)*0x70])[0]]
+                    data=self.r.read(0x80173ca0,64*0x60)
+                    row['particles']=[dict(slot=i,type=p[1],state=list(p[:8]),
+                        x=struct.unpack_from('<i',p,8)[0]/65536,y=struct.unpack_from('<i',p,12)[0]/65536,
+                        sprites=hex(struct.unpack_from('<I',p,0x38)[0]),assembly=hex(struct.unpack_from('<I',p,0x3c)[0]))
+                        for i in range(64) if (p:=data[i*0x60:(i+1)*0x60])[0]]
+                    rows.append(row);time.sleep(.015)
+            finally:self.r.release()
+            self.wait('elemental-finished-'+move,lambda s:s['players'][zero]['grounded'] and
+                s['players'][zero]['state']==1 and s['players'][zero]['action']==2,6)
+        (self.output/'zero-elemental.json').write_text(json.dumps(rows,indent=2),encoding='utf-8')
+        return dict(zero_seat=zero,frames=len(rows),actions=sorted({r['players'][zero]['action'] for r in rows}),
+            effect_types=sorted({e['type'] for r in rows for e in r['effects']}),
+            particle_types=sorted({p['type'] for r in rows for p in r['particles']}))
+
+    def fire_weakness(self):
+        self.cyber()
+        self.wait('weakness-cyber-fight-live',lambda s:not s['blocked'] and not s['warning'] and
+            any(e['type']==64 and e['hp']>1 for e in self.enemies()),20,True)
+        # Cyber's native update8007D838 enters reaction phase5 for attack
+        # types3/35/63 (returns4/36/64). X uses Soul Body, Zero Ryuuenjin.
+        # Enemy+63 == -1 denotes immunity/shot consumption, not a weakness.
+        self.r.fixture(7,1,3 if self.campaign else 0,1)
+        boss=next(e for e in self.enemies() if e['type']==64 and e['hp']>1)
+        before=boss['hp'];rows=[]
+        for attempt in range(10):
+            target=next((e for e in self.enemies() if e['type']==64 and e['hp']>0),None)
+            if target is None:break
+            # Enter from the observed floor, then the native fire technique
+            # reaches the boss vertically. P1 stays outside attack range.
+            # The boss can hover left of the safe floor behind the doorway.
+            # A setup teleport there crushes the body against the closed gate.
+            x=max(1040,min(1240,int(target['x'])))
+            self.r.teleport(1,x,2507)
+            self.r.input(0xff7f if target['x']<x else 0xffdf,1)
+            time.sleep(.015);self.r.release()
+            self.r.input(0x7fff if self.campaign else 0xefef,1);time.sleep(.12);self.r.release()
+            for frame in range(10):
+                row=self.sample('p2-fire-weakness-%d-%d'%(attempt,frame),frame%3==0)
+                row['bosses']=[e for e in self.enemies() if e['type']==64]
+                shots=self.r.read(self.r.diagnostic()+0x480,16*8)
+                row['shot_types']=[shots[i*8+1] for i in range(16) if shots[i*8]]
+                rows.append(row);time.sleep(.025)
+            if any(e['state'][1]==5 for r in rows for e in r['bosses']):break
+        (self.output/'fire-weakness.json').write_text(json.dumps(rows,indent=2),encoding='utf-8')
+        damage=min((e['hp'] for r in rows for e in r['bosses']),default=before)
+        assert damage<before,('P2 fire did no damage',before,damage)
+        assert any(e['state'][1]==5 for r in rows for e in r['bosses']),('No native weakness reaction',before,damage)
+        return dict(before_hp=before,after_hp=damage,native_weakness_reaction=True,campaign=self.campaign)
+
+    def initial_arrivals(self):
+        from mmx4_arrival_probe import Probe
+        output=self.output/'initial-arrivals';output.mkdir()
+        probe=Probe(self.r,output,self.campaign,True)
+        error=None
+        try:
+            for stage,section in ((1,0),(6,0),(6,1)):
+                probe.initial(stage,section,'first')
+            return dict(concurrent_native_arrivals=[{k:c[k] for k in
+                ('stage','section','concurrent_counter_delta','concurrent_beams_observed',
+                 'initial_gap_pixels','native_dash_observed','dash_during_partner_beam')}
+                for c in probe.cases],horizontal_gap=24)
+        except Exception as exc:
+            error=str(exc);raise
+        finally:probe.report(error)
+
+    def web_walljump(self):
+        from mmx4_web_probe import Probe
+        output=self.output/'web-walljump';output.mkdir()
+        probe=Probe(self.r,output,self.campaign)
+        try:
+            probe.walljump('left')
+            return dict(native_zero_web_walljump=True,campaign=self.campaign,cases=len(probe.cases))
+        finally:
+            self.r.release()
+            (output/'stage-interactions.json').write_text(json.dumps(
+                dict(cases=probe.cases,events=probe.events),indent=2),encoding='utf-8')
+
+    def stationary_arrivals(self):
+        from mmx4_arrival_probe import Probe
+        output=self.output/'stationary-arrivals';output.mkdir()
+        probe=Probe(self.r,output,self.campaign,True)
+        error=None
+        try:
+            for stage,section in ((1,0),(6,0),(6,1)):
+                probe.initial(stage,section,exercise_movement=False)
+            return dict(native_concurrent_arrivals=True,scenes=3,horizontal_gap=24,
+                        standing_both=True,campaign=self.campaign)
+        except Exception as exc:
+            error=str(exc);raise
+        finally:probe.report(error)
+
+    def intro_arrivals(self):
+        from mmx4_arrival_probe import Probe
+        output=self.output/'intro-arrivals';output.mkdir()
+        probe=Probe(self.r,output,self.campaign,True)
+        error=None
+        self.r.fixture(5,3)
+        try:
+            for seat in (1,0):probe.intro(seat)
+            return dict(native_p2_intro_entry=True,campaign=self.campaign,
+                        dash_seats=[dict(seat=c['dash_seat'],
+                            arrival_overlap=c['native_dash_during_partner_beam'],
+                            post_arrival_dash=c['post_arrival_native_dash'],
+                            timings=c['timings']) for c in probe.cases])
+        except Exception as exc:
+            error=str(exc);raise
+        finally:
+            self.r.fixture(5,0)
+            probe.report(error)
+
+    def train_background(self):
+        from mmx4_web_probe import Probe
+        output=self.output/'train-background';output.mkdir()
+        probe=Probe(self.r,output,self.campaign)
+        try:
+            for owner in (1,0):probe.train_background(owner,2)
+            return dict(native_split_train_background=True,owners=2)
+        finally:
+            self.r.release();self.r.fixture(5,0)
+            (output/'stage-interactions.json').write_text(json.dumps(
+                dict(cases=probe.cases,events=probe.events),indent=2),encoding='utf-8')
+
+    def dialogue_native(self):
+        from mmx4_dialogue_probe import slash_dialogue
+        result=slash_dialogue(self)
+        return dict(campaign=self.campaign,native_blue_dialogue=True,owners=len(result['cases']))
+
+    def volcano_probe(self):
+        self.load(4,1,3)
+        self.sample('volcano-native-checkpoint-3',True)
+        actors=self.r.read(0x80142f98,32*0x30)
+        stage_actors=[]
+        for slot in range(32):
+            actor=actors[slot*0x30:(slot+1)*0x30]
+            if actor[0]:
+                stage_actors.append(dict(slot=slot,type=actor[1],data=actor.hex()))
+        return dict(players=self.sample('volcano-start')['players'],
+                    enemies=self.enemies(),stage_actors=stage_actors)
+
+    def volcano_entry(self):
+        cases=[]
+        for owner in (1,0):
+            self.load(4,1,3)
+            self.sample('volcano-before-drop-'+str(owner),True)
+            self.r.input(0xffdf,owner)
+            try:
+                deadline=time.monotonic()+10
+                captured=0
+                while time.monotonic()<deadline:
+                    row=self.sample('volcano-drop-'+str(owner),captured%8==0)
+                    assert row['players'][owner]['hp']>0,('Leader died during native boss approach',row)
+                    if row['players'][owner]['door'] or row['players'][owner]['script'] or \
+                       (row['players'][owner]['grounded'] and row['players'][owner]['y']>520):
+                        break
+                    captured+=1
+                    time.sleep(.04)
+                else:raise TimeoutError(('Leader did not reach lower arena',row))
+            finally:self.r.release()
+            arrived=self.wait('volcano-partner-arrived-'+str(owner),lambda s:not s['blocked'] and
+                all(p['active'] and p['visible'] and p['hp']>0 and
+                    not p['door'] and not p['script'] and p['grounded'] and p['y']>520
+                    for p in s['players']),20,True)
+            self.sample('volcano-safe-landing-'+str(owner),True)
+            self.r.input(0xffdf,owner)
+            try:
+                self.wait('volcano-native-boss-'+str(owner),lambda s:any(
+                    e['hp']>=32 and e['state'][0] for e in self.enemies()),10)
+            finally:self.r.release()
+            self.wait('volcano-fight-live-'+str(owner),lambda s:not s['blocked'] and not s['warning'] and
+                all(p['active'] and p['visible'] and p['hp']>0 and p['state']==1 and
+                    p['action']==2 and not p['door'] and not p['script']
+                    for p in s['players']),25,True)
+            self.sample('volcano-fight-ready-'+str(owner),True)
+            cases.append(dict(owner=owner,arrival=arrived,enemies=self.enemies()))
+        return dict(native_approaches=cases,both_alive=True)
+
     def intro(self):
         self.load(0, 1, 2)
         self.r.teleport_both(4208, 443)
@@ -199,6 +594,319 @@ class Scenarios:
                   all(not p['door'] and not p['script'] and p['hp'] > 0 for p in s['players']), 30, True)
         return dict(p2_first_approach=True, native_arena_script_released=True,
                     note='Scripted arena approach; not a separate C4 door qualification')
+
+    def intro_entry(self):
+        self.load(0,1,2)
+        # Native gate is ahead of4200.4000 stopped P2 at the shared spacing
+        # limit before reaching it, so it did not exercise boss entry.
+        self.r.teleport(0,4200,443)
+        self.watch_enemy=8
+        before=self.sample('intro-native-checkpoint-before-entry',True)
+        assert not before['blocked'] and not any(p['script'] for p in before['players']),before
+        deadline=time.monotonic()+45
+        try:
+            while time.monotonic()<deadline:
+                row=self.sample('intro-native-p2-traversal')
+                if any(e['type']==8 and e['hp']>1 for e in self.enemies()):break
+                # Zero campaign has a Mac conversation before the dragon.
+                # Complete that native scene, then continue P2's approach.
+                if row['blocked']:
+                    self.r.input(0xbfff,0);self.r.input(0xbfff,1)
+                    time.sleep(.03);self.r.release()
+                else:
+                    # Mac's script returns Zero to4112. Restore the safe
+                    # pre-dragon fixture after that completed encounter so
+                    # the240px shared spacing limit permits P2-only entry.
+                    if self.campaign==1 and row['players'][0]['x']<4200 and \
+                       row['players'][0]['action']==2 and not row['players'][0]['script']:
+                        self.r.teleport(0,4200,442)
+                    self.r.input(0xffdf,1)
+                time.sleep(.02)
+            else:raise TimeoutError('P2 native intro traversal did not reach dragon')
+        finally:self.r.release()
+        self.sample('intro-native-entry-state',True)
+        self.wait('intro-native-dragon-ready',lambda s:not s['blocked'] and not s['warning'] and
+                  any(e['type']==8 and e['hp']>1 for e in self.enemies()) and
+                  all(p['active'] and p['visible'] and p['hp']>0 and p['state']==1 and
+                      p['action']==2 and not p['door'] and not p['script']
+                      for p in s['players']),25,True)
+        self.sample('intro-native-dragon-fight',True)
+        return dict(native_p2_controller_traversal=True,both_in_dragon_fight=True,
+                    p2_owns_scene=any(x['players'][1]['script'] for x in self.events
+                                     if x['label']=='intro-native-p2-traversal'))
+
+    def trail_probe(self,stage=1):
+        self.load(stage,0)
+        def dash(label):
+            self.r.input(0xdfdf,1)
+            peak=0
+            try:
+                for i in range(20):
+                    b=self.r.read(self.r.diagnostic()+0x500,3*0x60)
+                    active=sum(bool(b[n*0x60] and b[n*0x60+3]) for n in range(3))
+                    if active>peak:
+                        peak=active;self.sample(label+'-'+str(i),True)
+                    time.sleep(.008)
+            finally:self.r.release()
+            return dict(visible_peak=peak,actors=b.hex())
+        diag=self.r.diagnostic()
+        first_palette=struct.unpack('<I',self.r.read(0x1f800028,4))[0]
+        private_base=diag-0xc0000+(self.campaign^1)*0x60000
+        body=self.r.read(diag+0x100,0xe4)
+        assert private_base<=struct.unpack_from('<I',body,0x38)[0]<private_base+0x34000
+        palettes=[self.r.read(a+0x1a0,96).hex() for a in (first_palette,private_base+0x41000)]
+        color=struct.unpack_from('<H',bytes.fromhex(palettes[1]),2)[0]
+        red,blue=color&31,(color>>10)&31
+        correct_color=red>blue if self.campaign==0 else blue>red
+        before=dash('trail-before-warp')
+        (self.output/'trail-before.json').write_text(json.dumps(dict(palettes=palettes,before=before),indent=2))
+        assert before['visible_peak']>0,before
+        self.wait('trail-before-withdraw',lambda s:s['players'][1]['action']==2 and
+                  s['players'][1]['grounded'],5)
+        self.r.input(0xfffe,1)
+        try:self.wait('trail-withdrawn',lambda s:not s['players'][1]['active'],6)
+        finally:self.r.release()
+        time.sleep(.1)
+        self.r.input(0xfffe,1);time.sleep(.08);self.r.release()
+        self.wait('trail-returned',lambda s:s['players'][1]['active'] and
+                  s['players'][1]['action']==2 and s['players'][1]['grounded'],8)
+        after=dash('trail-after-warp')
+        (self.output/'trail-probe.json').write_text(json.dumps(dict(
+            palettes=palettes,before=before,after=after),indent=2))
+        assert after['visible_peak']>0,('Native trails lost after warp',after)
+        assert correct_color,('P2 native dash color belongs to other character',palettes)
+        return dict(before=before['visible_peak'],after=after['visible_peak'],palettes=palettes)
+
+    def post_victory_trails(self):
+        assert self.r.read(0x801721c0,2)==bytes([3,4]),'Run directly after save_loop'
+        assert self.r.read(0x801721c0+0x59,1)[0]&16
+        result=self.trail_probe(stage=8)
+        return dict(native_jet_victory_to_train=True,**result)
+
+    def open_airdash(self):
+        self.load(1,0)
+        self.r.fixture(5,0)
+        self.r.write(0x801418c8+0x61,0)
+        clears=self.r.read(0x801721c0+0x59,1)[0]
+        self.r.write(0x801721c0+0x59,clears|16)
+        self.r.write(0x801418c8+0xb9,clears|16)
+        time.sleep(.8)
+        zero_seat=self.campaign^1
+        captures=[]
+        for cycle in range(3):
+            self.r.teleport_both(56,139)
+            self.r.teleport(zero_seat,88,138)
+            self.wait('open-airdash-grounded-'+str(cycle),lambda s:all(
+                p['grounded'] and p['action']==2 for p in s['players']),6)
+            self.r.input(0xbfdf,zero_seat);time.sleep(.15)
+            self.r.release();time.sleep(.01)
+            self.r.input(0xdfdf,zero_seat)
+            try:
+                for frame in range(8):
+                    captures.append(self.sample('open-airdash-%d-%d'%(cycle,frame),True))
+                    time.sleep(.008)
+            finally:self.r.release()
+            time.sleep(.3)
+        actions=list(dict.fromkeys(s['players'][zero_seat]['action'] for s in captures))
+        assert 13 in actions,('Native Zero air dash was not exercised',actions)
+        assert all(all(p['visible'] and p['hp']>0 for p in s['players']) for s in captures)
+        return dict(native_zero_airdash_actions=actions,zero_seat=zero_seat,captures=len(captures))
+
+    def train_visual(self):
+        self.load(8,0)
+        self.r.fixture(5,0)
+        self.r.write(0x801418c8+0x61,0)
+        # Jet Stingray's native campaign bit gives Zero the air dash.
+        clears=self.r.read(0x801721c0+0x59,1)[0]
+        self.r.write(0x801721c0+0x59,clears|16)
+        time.sleep(.2)
+        self.sample('train-airdash-before',True)
+        captures=[]
+        for cycle in range(3):
+            self.r.input(0xbfdf,1);time.sleep(.08)
+            self.r.release();time.sleep(.02)
+            self.r.input(0xdfdf,1)
+            try:
+                for i in range(8):
+                    captures.append(self.sample('train-airdash-%d-%d'%(cycle,i),True))
+                    time.sleep(.008)
+            finally:self.r.release()
+            time.sleep(.2)
+        self.sample('train-airdash-after',True)
+        uploads=self.r.request('a0_history')
+        (self.output/'train-airdash-uploads.json').write_text(json.dumps(uploads,indent=2))
+        counters=self.r.request('mod_counters')['counters']
+        return dict(airdash_actions=list(dict.fromkeys(s['players'][1]['action'] for s in captures)),
+                    uploads=uploads['count'],primary_private_draws=sum(c['count'] for c in counters
+                     if c['name']=='mmx4.coop.primary-private-character-draws'))
+
+    def door_death(self):
+        cases=[]
+        for owner in (1,0):
+            self.load(6,1,1)
+            self.r.teleport_both(568,2507)
+            self.r.teleport(owner,600,2507)
+            self.r.input(0xffdf,owner)
+            try:self.wait('door-death-entered-'+str(owner),lambda s:s['players'][owner]['door'],8)
+            finally:self.r.release()
+            self.r.request('wtrace_range',lo='0x141924',hi='0x141925')
+            lives=self.r.read(0x801721c0+0x44,1)[0]
+            before_counters=self.r.request('mod_counters')['counters']
+            count=lambda counters:sum(c['count'] for c in counters if c['name']==
+                                      'mmx4.coop.p%d-death-sequences'%(owner+1))
+            before=count(before_counters)
+            self.r.fixture(2,owner,0x80)
+            self.sample('door-death-fatal-'+str(owner),True)
+            row=self.wait('door-death-survivor-released-'+str(owner),lambda s:
+                s['players'][owner]['hp']==0 and s['players'][owner^1]['active'] and
+                s['players'][owner^1]['visible'] and s['players'][owner^1]['action']==2 and
+                not s['blocked'] and not any(p['door'] or p['script'] for p in s['players']),15,True)
+            self.sample('door-death-survivor-safe-'+str(owner),True)
+            assert row['players'][owner^1]['hp']>0 and row['lives']==lives,row
+            after=count(self.r.request('mod_counters')['counters'])
+            assert after-before==1,('Repeated native death sequence',before,after)
+            cases.append(dict(owner=owner,players=row['players'],native_death_sequences=after-before))
+        return dict(native_death_during_door=cases)
+
+    def train_return(self):
+        self.load(8,0)
+        self.wait('train-return-start',lambda s:all(p['action']==2 and p['grounded']
+                  for p in s['players']) and not s['blocked'],10)
+        self.r.input(0xfffe,1)
+        try:self.wait('train-withdrawn',lambda s:not s['players'][1]['active'],6)
+        finally:self.r.release()
+        time.sleep(.1)
+        self.r.input(0xfffe,1);time.sleep(.08);self.r.release()
+        row=self.wait('train-return-finished',lambda s:s['players'][1]['active'] and
+                      s['players'][1]['action']==2 and s['players'][1]['grounded'],10)
+        assert all(p['hp']>0 for p in row['players']),row
+        self.sample('train-native-return-safe',True)
+        return dict(native_train_return=True,players=row['players'])
+
+    def train_deaths(self):
+        cases=[]
+        for checkpoint in (0,2):
+            self.load(8,0,checkpoint)
+            start=self.wait('train-deaths-grounded-'+str(checkpoint),lambda s:all(
+                p['action']==2 and p['grounded'] for p in s['players']) and not s['blocked'],10)
+            self.r.fixture(2,1,0x80)
+            self.wait('train-deaths-p2-gone-'+str(checkpoint),lambda s:s['players'][1]['state']==3,12)
+            assert self.sample('train-survivor-safe')['players'][0]['hp']>0
+            self.r.fixture(2,0,0x80)
+            row=self.wait('train-team-retry-'+str(checkpoint),lambda s:s['mode'][:2]==[6,0] and
+                s['lives']==start['lives']-1 and all(p['active'] and p['visible'] and p['hp']>0 and
+                p['state']==1 and p['action']==2 and p['grounded'] for p in s['players']),35,True)
+            self.sample('train-team-retry-visible-'+str(checkpoint),True)
+            cases.append(dict(checkpoint=checkpoint,lives=row['lives'],players=row['players']))
+        return dict(native_train_death_retries=cases)
+
+    def train_boss(self):
+        cases=[]
+        for owner in (1,0):
+            self.load(8,1,3)
+            # Checkpoint is inside the last carriage. Its platform continues
+            # at X9360; seed the approach past the carriage wall. The native
+            # boss gate at X9472 must still be crossed by controller input.
+            self.r.teleport_both(9360,395)
+            self.r.write(0x801721c0+0x2e,0) # Native first-visit boss dialogue policy.
+            start=self.wait('train-boss-grounded-'+str(owner),lambda s:all(
+                p['grounded'] and p['hp']>0 for p in s['players']),10)
+            self.sample('train-boss-before-'+str(owner),True)
+            self.r.input(0xffdf,owner)
+            try:
+                entry=self.wait('train-boss-dialogue-'+str(owner),lambda s:s['blocked'] or
+                    any(p['script'] for p in s['players']),15)
+            finally:self.r.release()
+            self.sample('train-boss-dialogue-visible-'+str(owner),True)
+            self.wait('train-boss-text-phase-'+str(owner),lambda s:any(e['type']==54 and
+                e['state']==[1,9,6] for e in self.enemies()) and self.r.read(0x8013bc34,1)[0],15)
+            for panel_frame in range(4):
+                time.sleep(.4)
+                self.sample('train-boss-text-panel-%d-%d'%(owner,panel_frame),True)
+            row=self.wait('train-boss-fight-'+str(owner),lambda s:not s['blocked'] and not s['freeze'] and
+                not s['warning'] and any(e['type']==54 and e['hp']>1 for e in self.enemies()) and
+                all(p['active'] and p['visible'] and p['state']==1 and p['action']==2 and
+                    p['hp']>0 and not p['script'] and not p['door'] for p in s['players']),25,True)
+            self.sample('train-boss-both-visible-'+str(owner),True)
+            boss=next(e for e in self.enemies() if e['type']==54 and e['hp']>1)
+            self.r.fixture(6,boss['slot'],127) # Keep repeated visual attack probes in the fight.
+            for seat in (1,0):
+                counters=self.r.request('mod_counters')['counters']
+                counts=lambda cs:{c['name']:c['count'] for c in cs if 'pause-world' in c['name']}
+                before=counts(counters)
+                self.r.input(0xfff7,seat);time.sleep(.1);self.r.release()
+                self.wait('train-boss-pause-'+str(owner)+'-'+str(seat),lambda s:
+                    s['mode'][:2]==[6,2] and s['menu'][0]==1 and s['menu'][1]<3,6)
+                self.sample('train-boss-menu-'+str(owner)+'-'+str(seat),True)
+                self.r.input(0xfff7,seat);time.sleep(.1);self.r.release()
+                self.wait('train-boss-resume-'+str(owner)+'-'+str(seat),lambda s:s['mode'][:2]==[6,0],6)
+                for frame in range(12):
+                    self.r.input(0x7fff,1);time.sleep(.09);self.r.release()
+                    time.sleep(.3)
+                    self.sample('train-boss-resumed-'+str(owner)+'-'+str(seat)+'-'+str(frame),True)
+                after=counts(self.r.request('mod_counters')['counters'])
+                assert all(after.get(name,0)>before.get(name,0) for name in
+                    ('mmx4.coop.pause-world-player-draws','mmx4.coop.pause-world-hud-draws')),('Pause world omitted P2',before,after)
+            cases.append(dict(owner=owner,start=start['players'],entry=entry['players'],ready=row['players']))
+        return dict(native_slash_beast_entries=cases)
+
+    def bike_probe(self):
+        self.load(5,0)
+        diag=self.r.diagnostic()
+        def grounded_bikes(s):
+            data=self.r.read(diag,0x6d0)
+            return all(data[at+4:at+6]==bytes([1,1]) and data[at+0x70]&8 for at in (0x620,0x200))
+        row=self.wait('bike-both-initialized-grounded',grounded_bikes,10)
+        x,y=int(row['players'][0]['x']),int(row['players'][0]['y'])
+        self.r.teleport_both(x,y);self.r.teleport(1,x-96,y)
+        time.sleep(.06)
+        frames=[]
+        def capture(label):
+            data=self.r.read(diag,0x6d0)
+            def actor(at):
+                p=data[at:at+0xb0]
+                return dict(state=list(p[:8]),priority=p[0x16],pose=p[0x46],frame=p[0x47],
+                    grounded=bool(p[0x70]&8),controls=struct.unpack_from('<H',p,0x8c)[0],
+                    x=struct.unpack_from('<i',p,8)[0]/65536,y=struct.unpack_from('<i',p,12)[0]/65536,
+                    sprites=hex(struct.unpack_from('<I',p,0x38)[0]),assembly=hex(struct.unpack_from('<I',p,0x3c)[0]))
+            row=dict(label=label,players=[actor(0x300),actor(0x100)],bikes=[actor(0x620),actor(0x200)])
+            data=self.r.read(0x8013f328,32*0x9c)
+            row['exhaust']=[dict(slot=i,state=list(p[:8]),priority=p[0x16],
+                x=struct.unpack_from('<i',p,8)[0]/65536,y=struct.unpack_from('<i',p,12)[0]/65536)
+                for i in range(32) if (p:=data[i*0x9c:(i+1)*0x9c])[0] and p[1]==57]
+            frames.append(row);self.sample(label,True)
+        capture('bike-before-dash')
+        for seat in (1,0):
+            self.r.input(0xdfff,seat)
+            try:
+                for frame in range(8):
+                    capture('bike-dash-%d-%d'%(seat,frame));time.sleep(.012)
+            finally:self.r.release()
+            time.sleep(.06)
+        (self.output/'bike-frames.json').write_text(json.dumps(frames,indent=2),encoding='utf-8')
+        for seat in (1,0):
+            assert any(row['label'].startswith('bike-dash-'+str(seat)) and
+                       row['bikes'][seat]['state'][5] in (2,5) for row in frames),('Bike ignored Dash',seat,
+                [(row['label'],row['bikes'][seat]['state'][5]) for row in frames])
+        return dict(native_bike_frames=len(frames),initial=frames[0],dash=frames[-1])
+
+    def arrival_death(self):
+        self.load(6,1,1)
+        self.r.teleport_both(568,2507);self.r.teleport(0,600,2507)
+        self.r.input(0xffdf,0)
+        try:
+            self.wait('arrival-death-door-start',lambda s:s['players'][0]['door'],8)
+            incoming=self.wait('arrival-death-incoming',lambda s:not s['players'][0]['door'] and
+                s['players'][1]['active'] and s['players'][1]['visible'] and
+                s['players'][1]['action']==0,15)
+        finally:self.r.release()
+        self.r.fixture(2,0,0x80)
+        row=self.wait('arrival-death-survivor-ready',lambda s:s['players'][0]['hp']==0 and
+                      s['players'][1]['active'] and s['players'][1]['action']==2 and
+                      s['players'][1]['hp']>0,10)
+        assert row['players'][1]['x']>=688 and row['players'][1]['y']>=2480,row
+        self.sample('arrival-death-kept-new-room',True)
+        return dict(native_leader_death_during_arrival=True,incoming=incoming,players=row['players'])
 
     def combat(self):
         self.intro()
@@ -462,6 +1170,8 @@ class Scenarios:
             count=lambda name:sum(c['count'] for c in counters if c['name']==name)
             before_departures=count('mmx4.coop.script-departures')
             before_arrivals=count('mmx4.coop.script-arrivals')
+            before_pairs=count('mmx4.coop.concurrent-return-arrivals')
+            pair_beam=None
             # Native-burn-40's bounded hub traversal established these safe
             # platforms:565/955 and659/923 (Zero's feet are one pixel higher).
             # Use those observed coordinates and let only the designated
@@ -479,6 +1189,10 @@ class Scenarios:
                 row=self.sample('cyber-course-handoff')
                 counters=self.r.request('mod_counters')['counters']
                 if row['section']!=0 or row['checkpoint']!=checkpoint:transitioned=True
+                if transitioned and row['mode'][:2]==[6,0] and pair_beam is None and all(
+                    p['active'] and p['visible'] and p['state']==1 and p['action']==0
+                    for p in row['players']):
+                    pair_beam=self.sample('cyber-paired-return-'+str(checkpoint),True)
                 if not transitioned:
                     assert count('mmx4.coop.script-arrivals')==before_arrivals,(
                         'Passenger returned before native course changed',row)
@@ -491,8 +1205,12 @@ class Scenarios:
             assert row['section']==(1 if checkpoint==5 else 0),row
             assert row['checkpoint']==(0 if checkpoint==5 else 2),row
             self.sample('cyber-hub-'+str(checkpoint)+'-complete',True)
+            pairs=count('mmx4.coop.concurrent-return-arrivals')-before_pairs
+            if checkpoint==1:
+                assert pairs>0 and pair_beam,('Native direct return did not arrive together',pairs,row)
             cases.append(dict(checkpoint=checkpoint,owner=owner,after=row,
-                              passenger_arrivals=count('mmx4.coop.script-arrivals')-before_arrivals))
+                              passenger_arrivals=count('mmx4.coop.script-arrivals')-before_arrivals,
+                              concurrent_return_arrivals=pairs,pair_beam=pair_beam))
         return dict(native_assessment_handoffs=cases)
 
     def spider_hole(self):
@@ -600,6 +1318,107 @@ class Scenarios:
         assert self.r.read(0x801721c0+0x59,1)[0]==clears,row
         return dict(same_stage_reentry_both_alive=True,preserved_clears=clears,players=row['players'])
 
+    def portrait_exit(self):
+        """Quit a live stage and use native Continue with current data."""
+        clears=self.r.read(0x801721c0+0x59,1)[0]
+        assert clears, 'Run after save_loop or with a cloned native save'
+        self.load(1,0)
+        def pulse(buttons):
+            self.r.input(buttons,0);time.sleep(.15)
+            self.r.release();time.sleep(.2)
+        pulse(0xfff7)
+        self.wait('portrait-exit-pause',lambda s:s['mode'][:2]==[6,2] and s['menu'][0]==1 and s['menu'][1]<3,5)
+        pulse(0xfffe)
+        self.wait('portrait-exit-quit-dialogue',lambda s:s['menu'][1]==6,5)
+        time.sleep(.7)
+        self.sample('portrait-exit-quit-choice',True)
+        pulse(0xffbf)
+        pulse(0xbfff)
+        # Original Quit has a second No/Yes confirmation. Confirm Yes, then
+        # skip the title animation using Start, as on a cold native boot.
+        time.sleep(.4)
+        pulse(0xffbf)
+        pulse(0xbfff)
+        deadline=time.monotonic()+15
+        while time.monotonic()<deadline:
+            front=self.r.read(0x80173c70,0x20)
+            if front[:2]==bytes([6,1]):break
+            if front[0]<6:pulse(0xfff7)
+            else:time.sleep(.05)
+        else:raise TimeoutError(('Native Quit did not reach main menu',self.sample('portrait-exit-quit-stuck')))
+        self.sample('portrait-exit-main-menu',True)
+        cache=list(self.r.read(0x800f1d90,8))
+        assert cache[0]==self.campaign and cache[4]==clears,('Quit changed Continue data',cache,clears)
+        # Main menu defaults to New Game; Continue defaults to current data
+        # when this same process still has an active campaign.
+        pulse(0xffbf)
+        pulse(0xbfff)
+        deadline=time.monotonic()+12
+        while time.monotonic()<deadline:
+            front=self.r.read(0x80173c70,0x20)
+            if front[0]==7 and front[1] in (1,3):break
+            time.sleep(.05)
+        else:raise TimeoutError('Native Continue choice did not open')
+        self.sample('portrait-exit-current-data-choice',True)
+        routes=[]
+        deadline=time.monotonic()+20
+        while time.monotonic()<deadline:
+            row=self.sample('portrait-exit-current-data')
+            if not routes or routes[-1]!=row['mode'][:2]:routes.append(row['mode'][:2])
+            if row['mode'][:2]==[3,4]:break
+            if row['mode'][0]==0 and row['mode'][1]!=0:
+                raise AssertionError(('Entered card load instead of current data',routes))
+            pulse(0xbfff)
+        else:raise TimeoutError('Continue current data did not reach stage selection')
+        self.sample('portrait-exit-returned-board',True)
+        actual=self.r.read(0x801721c0+0x59,1)[0]
+        assert actual==clears,('Stage exit lost clears',clears,actual,cache)
+        palette=struct.unpack('<I',self.r.read(0x1f800028,4))[0]
+        indices=self.r.read(0x800f4758,8)
+        colors_by_boss={}
+        for boss in range(8):
+            if not clears&(1<<boss):continue
+            colors=struct.unpack('<16H',self.r.read(palette+indices[boss]*32,32))
+            colors_by_boss[boss]=colors
+            assert all((c&31)==((c>>5)&31)==((c>>10)&31) for c in colors),('Stage-exit portrait recolored',boss,colors)
+        return dict(native_quit_continue_current=True,clears=clears,continue_cache=cache,
+                    routes=routes,portrait_colors=colors_by_boss)
+
+    def portrait_escape(self):
+        clears=self.r.read(0x801721c0+0x59,1)[0]
+        assert clears&16,'Run with a native Jet Stingray clear'
+        self.load(5,1,1)
+        def pulse(buttons):
+            self.r.input(buttons,0);time.sleep(.12);self.r.release();time.sleep(.15)
+        pulse(0xfff7)
+        self.wait('portrait-escape-pause',lambda s:s['mode'][:2]==[6,2] and
+                  s['menu'][0]==1 and s['menu'][1]<3,5)
+        self.sample('portrait-escape-menu',True)
+        choices=[]
+        for _ in range(12):
+            selected=self.r.read(0x801754b4,1)[0]
+            choices.append(selected)
+            if selected==13:break
+            pulse(0xffbf if selected<10 else 0xffdf)
+        else:raise AssertionError(('Native Escape Device not selectable',choices))
+        self.sample('portrait-escape-device-selected',True)
+        pulse(0xbfff)
+        deadline=time.monotonic()+65
+        while time.monotonic()<deadline:
+            row=self.sample('portrait-escape-board')
+            if row['mode'][:2]==[3,4]:break
+            if row['mode'][0] in (12,9) or row['mode'][:2]==[3,9]:pulse(0xbfff)
+            else:time.sleep(.05)
+        else:raise TimeoutError(('Native escape/save UI did not return to board',row))
+        self.sample('portrait-escape-returned-board',True)
+        actual=self.r.read(0x801721c0+0x59,1)[0]
+        assert actual==clears,('Escape lost campaign progress',clears,actual)
+        palette=struct.unpack('<I',self.r.read(0x1f800028,4))[0]
+        indices=self.r.read(0x800f4758,8)
+        colors=struct.unpack('<16H',self.r.read(palette+indices[4]*32,32))
+        assert all((c&31)==((c>>5)&31)==((c>>10)&31) for c in colors),('Escape recolored Jet portrait',colors)
+        return dict(native_escape_device=True,choices=choices,clears=actual,portrait_colors=colors,mode=row['mode'])
+
     def finish_save(self,win,clears):
         deadline=time.monotonic()+45
         try:
@@ -652,9 +1471,12 @@ def main():
     parser.add_argument('--victory-seat',type=int,choices=(0,1),default=1)
     parser.add_argument('--card-seed',type=Path,help='Private native cards to clone and Continue from data1')
     parser.add_argument('--clears',type=lambda p:int(p,0),default=16,help='Expected boss bits on cold native card load')
-    parser.add_argument('--cases', nargs='+', choices=('jet', 'cyber', 'intro','combat','jet_boss',
+    parser.add_argument('--hold-on-failure',type=int,default=0,
+                        help='Keep only this owned hidden process alive for bounded TCP investigation')
+    parser.add_argument('--cameras',choices=('unified','split'),default='unified')
+    parser.add_argument('--cases', nargs='+', choices=('jet','bike_probe', 'cyber','handoff_dash','section_health','dash_effects','zero_elemental','fire_weakness','initial_arrivals','stationary_arrivals','intro_arrivals','web_walljump','train_background','dialogue_native','cyber_flip_probe','cyber_flip','storm_warp', 'intro','intro_entry','trail_probe','post_victory_trails','open_airdash','train_visual','door_death','train_return','train_deaths','train_boss','arrival_death','combat','jet_boss',
                         'spider_visual','cyber_missiles','spider_hole','victory','diagnostics','audio',
-                        'cyber_orb','cyber_course','save_loop','second_save_loop','stage_reentry','reload_save','enemy_activation'), default=['jet', 'cyber', 'intro'])
+                        'cyber_orb','cyber_course','cyber_moving','volcano_probe','volcano_entry','save_loop','second_save_loop','stage_reentry','portrait_exit','portrait_escape','reload_save','enemy_activation'), default=['jet', 'cyber', 'intro'])
     args = parser.parse_args()
     for name in ('exe', 'bios', 'disc', 'game', 'output'):
         setattr(args, name, getattr(args, name).resolve())
@@ -671,12 +1493,12 @@ def main():
         shutil.copy2(dll, args.output / dll.name)
     (args.output / 'mods/state.toml').write_text('format_version = 2\n\n[[feature]]\n'
         'package_id = "mmx4.coop"\nid = "coop"\nenabled = true\n'
-        '[feature.values]\ncameras = "unified"\n\n[[feature]]\n'
+        '[feature.values]\ncameras = "'+args.cameras+'"\n\n[[feature]]\n'
         'package_id = "mmx4.enhancement.widescreen"\nid = "widescreen"\nenabled = false\n')
-    config = args.game.read_text().replace('exe = "mmx4/SLUS_005.61"',
+    config = args.game.read_text(encoding="utf-8").replace('exe = "mmx4/SLUS_005.61"',
         'exe = ' + json.dumps((args.game.parent / 'mmx4/SLUS_005.61').as_posix()))
     config = config.replace('internal_resolution = "1080p"', 'internal_resolution = "native"')
-    (args.output / 'game.toml').write_text(config)
+    (args.output / 'game.toml').write_text(config,encoding='utf-8',newline='\n')
     env = {key: value for key, value in os.environ.items()
            if not key.upper().startswith(('PSX_', 'RNET_', 'MMX4_DIAGNOSTIC_'))}
     env['PATH'] = r'C:\msys64\mingw64\bin;' + env.get('PATH', '')
@@ -715,8 +1537,13 @@ def main():
             print(report['error'], flush=True)
             try:
                 scenarios.sample('failure', True)
+                (args.output/'failure-enemies.json').write_text(json.dumps(scenarios.enemies(),indent=2))
+                (args.output/'failure-writes.json').write_text(json.dumps(runtime.request('wtrace_dump',count=4096),indent=2))
             except Exception:
                 pass
+            if args.hold_on_failure:
+                print('Owned hidden failure process retained for TCP inspection',flush=True)
+                time.sleep(max(0,min(300,args.hold_on_failure)))
             raise
         finally:
             if process.poll() is None:

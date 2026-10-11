@@ -11,6 +11,8 @@
 static uint8_t ram[0x200000],second[0xE4],backup[0xE4];
 static unsigned split=1,projected,local_scope,ready=1,capacity=16,allocations,scans;
 static int script_owner=-1;
+static unsigned room_entries,room_owner;
+void mmx4_coop_lifecycle_room_entry(unsigned owner) {++room_entries;room_owner=owner;}
 typedef struct {uint32_t address;PSXModFunctionFilterCallback callback;} Filter;
 static Filter filters[16];static unsigned filter_count;
 static PSXModFunctionEntryCallback spawned;
@@ -52,6 +54,7 @@ uint8_t *mmx4_coop_second_body(void) {return second;}
 uint8_t *mmx4_coop_first_body(void) {return backup;}
 static unsigned actor_context;
 static unsigned area_calls,checkpoint_calls,shared_area_writes;
+static unsigned train_calls,train_foreground_calls;
 int mmx4_coop_combat_actor_context(void) {return (int)actor_context;}
 int mmx4_coop_lifecycle_script_owner(void) {return script_owner;}
 void mmx4_coop_lifecycle_camera_bounds(CPUState *cpu,unsigned owner) {
@@ -110,8 +113,58 @@ static uint32_t invoke(CPUState *cpu,uint32_t address) {
     }
     if(address==0x80027D40u || address==0x800281E8u) {
         unsigned layer=address==0x80027D40u?1:2;
+        uint32_t background=CAMERA+layer*0x54u;
+        psx_mod_write_word(background+20,psx_mod_read_word(background+8));
+        psx_mod_write_word(background+24,psx_mod_read_word(background+12));
+        if(psx_mod_read_byte(background+4)==5)return 0; /* Native train helpers are no-ops. */
         psx_mod_write_half(CAMERA+layer*0x54u+10,psx_mod_read_half(CAMERA+10)/2);
         psx_mod_write_half(CAMERA+layer*0x54u+14,psx_mod_read_half(CAMERA+14)/4);return 0;
+    }
+    if(address==0x800D964Cu) {
+        ++train_foreground_calls;
+        if(!psx_mod_read_byte(actor+7)) {
+            uint32_t speed=psx_mod_read_word(actor+0x18);
+            if(speed)psx_mod_write_word(actor+0x18,speed-2048u);
+            else {
+                psx_mod_write_half(CAMERA+0x1C,9440);psx_mod_write_half(CAMERA+0x24,9440);
+                psx_mod_write_byte(actor+7,1);psx_mod_write_byte(actor+0x17,0);
+            }
+        }else if(!psx_mod_read_byte(MMX4_PLAYER+0xBC)) {
+            int32_t dx=(int32_t)(psx_mod_read_word(CAMERA+8)-psx_mod_read_word(CAMERA+20));
+            psx_mod_write_word(CAMERA+0x54u+8,psx_mod_read_word(CAMERA+0x54u+8)+(uint32_t)dx);
+            psx_mod_write_word(CAMERA+0xA8u+8,psx_mod_read_word(CAMERA+0xA8u+8)+(uint32_t)(dx>>1));
+        }
+        return 0xABCDu;
+    }
+    if(address==0x800D8648u || address==0x800D9218u) {
+        ++train_calls;
+        if(psx_mod_read_byte(actor+4)>1)return 0;
+        uint32_t first=CAMERA+0x54u,second_layer=CAMERA+0xA8u;
+        if(!psx_mod_read_byte(actor+4)) {
+            psx_mod_write_byte(actor+4,1);psx_mod_write_word(actor+0x18,0x80000u);
+            psx_mod_write_byte(actor+0x14,5);psx_mod_write_byte(actor+5,5);
+            psx_mod_write_byte(first+0x4D,2);psx_mod_write_byte(second_layer+0x4D,2);
+            psx_mod_write_byte(first+0x4E,address==0x800D8648u?7:13);
+            psx_mod_write_byte(second_layer+0x4E,5);
+            psx_mod_write_half(CAMERA+0x2C,48);psx_mod_write_half(CAMERA+0x2E,160);
+        }
+        if(address==0x800D9218u) {
+            /* Retail D993C resets subphases before the selected callback. */
+            const int thresholds[]={5808,7648,9984,10000};unsigned region=0;
+            int x=(int16_t)psx_mod_read_half(MMX4_PLAYER+10);
+            while(region<4 && x>=thresholds[region])++region;
+            if(region!=psx_mod_read_byte(actor+0x14)) {
+                psx_mod_write_byte(actor+5,(uint8_t)region);
+                psx_mod_write_byte(actor+6,0);psx_mod_write_byte(actor+7,0);
+            }
+            psx_mod_write_byte(actor+0x14,(uint8_t)region);
+            if(psx_mod_read_byte(actor+5)==1 && psx_mod_read_byte(actor+6)==2)
+                invoke(cpu,0x800D964Cu);
+        }
+        int32_t speed=(int32_t)psx_mod_read_word(actor+0x18);
+        psx_mod_write_word(first+8,psx_mod_read_word(first+8)+(uint32_t)speed);
+        psx_mod_write_word(second_layer+8,psx_mod_read_word(second_layer+8)+(uint32_t)(speed>>1));
+        return 0x12345678u;
     }
     if(address==0x800B56F4u) {
         ++area_calls;uint32_t parameters=psx_mod_read_word(actor+0x18u);
@@ -177,6 +230,210 @@ static void placement(unsigned index,int x,int y,unsigned category) {
     uint32_t record=TABLE+index*8u;
     psx_mod_write_half(record+4,(uint16_t)x);psx_mod_write_half(record+6,(uint16_t)y);
     psx_mod_write_byte(record+3,(uint8_t)category);
+}
+static uint32_t saved_camera(unsigned seat,unsigned layer) {
+    return 0x801F0000u+16u+seat*0xFCu+layer*0x54u;
+}
+static uint32_t train_pool_tick(CPUState *cpu) {
+    /* QA87 observed D9218 with a0=80169CB8, ra=80021BDC. Original21B34
+     * dispatches four30-byte actors via800F2AB4 AFTER27850/27D40/281E8. */
+    CPUState saved=*cpu;uint32_t result=0;
+    for(unsigned slot=0;slot<4;++slot) {
+        uint32_t actor=0x80169CB8u+slot*0x30u;
+        if(!psx_mod_read_byte(actor))continue;
+        cpu->gpr[4]=actor;
+        unsigned kind=psx_mod_read_byte(actor+1);
+        CHECK(kind==0 || kind==2);
+        result=invoke(cpu,kind==0?0x800D8648u:0x800D9218u);
+    }
+    *cpu=saved;return result;
+}
+static void train_backgrounds(CPUState *cpu) {
+    uint8_t view[0xFC];uint32_t actor=0x80169CB8u;
+    script_owner=-1;split=ready=1;local_scope=projected=0;
+    psx_mod_write_byte(MMX4_PLAYER,1);psx_mod_write_byte(MMX4_PLAYER+4,1);
+    second[0]=second[4]=1;actor_position(MMX4_PLAYER,9472,395);second_position(9072,395);
+    psx_mod_write_byte(MMX4_PLAY+12,8);psx_mod_write_byte(MMX4_PLAY+13,1);
+    memset(ram+(CAMERA&0x1FFFFFu),0,0xFCu);
+    psx_mod_write_word(CAMERA+8,9392u<<16);psx_mod_write_word(CAMERA+20,9392u<<16);
+    psx_mod_write_word(CAMERA+12,208u<<16);psx_mod_write_word(CAMERA+24,208u<<16);
+    for(unsigned layer=1;layer<3;++layer)psx_mod_write_byte(CAMERA+layer*0x54u+4,5);
+    psx_mod_write_word(CAMERA+0x54u+8,3408u<<16);
+    psx_mod_write_word(CAMERA+0x54u+12,256u<<16);
+    psx_mod_write_word(CAMERA+0xA8u+8,1448u<<16);
+    psx_mod_write_word(CAMERA+0xA8u+12,256u<<16);
+    mmx4_coop_split_reset();mmx4_coop_split_camera_prepare(0);
+    psx_mod_write_word(saved_camera(1,0)+8,8912u<<16);
+    psx_mod_write_word(saved_camera(1,0)+20,8912u<<16);
+    /* The real QA79 train loop advances 8/4 px while the boss FG is fixed.
+     * Each pane can start with distinct scenery and foreground origins. */
+    psx_mod_write_word(saved_camera(1,1)+8,3500u<<16);
+    psx_mod_write_word(saved_camera(1,2)+8,1500u<<16);
+    /* Exact QA87 body: base slot, live kind2, D9218's ordinary boss loop. */
+    psx_mod_write_byte(actor,0x81);psx_mod_write_byte(actor+1,2);psx_mod_write_byte(actor+4,1);
+    psx_mod_write_byte(actor+0x14,2);psx_mod_write_byte(actor+5,5);
+    psx_mod_write_word(actor+0x18,0x80000u);cpu->gpr[4]=actor;
+    /* The current native camera snapshots precede the four-slot world pool. */
+    invoke(cpu,0x80027850u);mmx4_coop_split_camera(cpu,0);
+    uint32_t fg0=psx_mod_read_word(saved_camera(0,0)+8);
+    uint32_t fg1=psx_mod_read_word(saved_camera(1,0)+8);
+    unsigned calls=train_calls,initial_foreground_calls=train_foreground_calls;
+    CHECK(train_pool_tick(cpu)==0x12345678u);
+    CHECK(train_calls==calls+1);
+    CHECK(train_foreground_calls==initial_foreground_calls); /* Absent in QA87. */
+    CHECK(psx_mod_read_word(CAMERA+0x54u+8)==3416u<<16);
+    CHECK(psx_mod_read_word(saved_camera(0,1)+8)==3416u<<16);
+    CHECK(psx_mod_read_word(saved_camera(1,1)+8)==3508u<<16);
+    CHECK(psx_mod_read_word(saved_camera(0,2)+8)==1452u<<16);
+    CHECK(psx_mod_read_word(saved_camera(1,2)+8)==1504u<<16);
+    CHECK(psx_mod_read_word(saved_camera(0,0)+8)==fg0);
+    CHECK(psx_mod_read_word(saved_camera(1,0)+8)==fg1);
+    CHECK(psx_mod_read_word(saved_camera(1,1)+12)==256u<<16);
+    /* The next frame's camera snapshots preserve the preceding pool's delta,
+     * then one new world pass advances both backgrounds by another8/4px. */
+    invoke(cpu,0x80027850u);mmx4_coop_split_camera(cpu,0);
+    CHECK(psx_mod_read_word(saved_camera(0,1)+8)==3416u<<16);
+    CHECK(psx_mod_read_word(saved_camera(1,1)+8)==3508u<<16);
+    train_pool_tick(cpu);CHECK(train_calls==calls+2);
+    CHECK(psx_mod_read_word(saved_camera(0,1)+8)==3424u<<16);
+    CHECK(psx_mod_read_word(saved_camera(1,1)+8)==3516u<<16);
+    /* Native signed arithmetic half includes negative odd fixed units and
+     * uint32 camera wrap, without a second transform on the canonical view. */
+    psx_mod_write_word(actor+0x18,0xFFFFFFFDu);
+    uint32_t first_x=psx_mod_read_word(saved_camera(0,1)+8);
+    uint32_t second_x=psx_mod_read_word(saved_camera(1,1)+8);
+    uint32_t second_layer=psx_mod_read_word(saved_camera(1,2)+8);
+    train_pool_tick(cpu);
+    CHECK(psx_mod_read_word(saved_camera(0,1)+8)==first_x-3u);
+    CHECK(psx_mod_read_word(saved_camera(1,1)+8)==second_x-3u);
+    CHECK(psx_mod_read_word(saved_camera(1,2)+8)==second_layer-2u);
+    /* Canonical owner changes start from that owner's scrolling background. */
+    mmx4_coop_split_camera_prepare(1);
+    CHECK(psx_mod_read_word(CAMERA+0x54u+8)==second_x-3u);
+    psx_mod_write_word(CAMERA+20,psx_mod_read_word(CAMERA+8));
+    mmx4_coop_split_camera(cpu,1);
+    psx_mod_write_byte(actor+1,2);psx_mod_write_byte(actor+0x14,2);
+    psx_mod_write_byte(actor+5,5);psx_mod_write_word(actor+0x18,0x80000u);
+    second_x=psx_mod_read_word(saved_camera(1,1)+8);
+    invoke(cpu,0x800D9218u);
+    CHECK(psx_mod_read_word(CAMERA+0x54u+8)==second_x+0x80000u);
+    CHECK(psx_mod_read_word(saved_camera(1,1)+8)==second_x+0x80000u);
+    /* Earlier type2 phase1 adds each pane's own current-minus-previous FG
+     * movement, with sra (floor), including opposite odd fractional motion. */
+    actor_position(MMX4_PLAYER,7000,395);
+    psx_mod_write_byte(actor+0x14,1);psx_mod_write_byte(actor+5,1);
+    psx_mod_write_byte(actor+6,2);psx_mod_write_byte(actor+7,1);
+    psx_mod_write_word(CAMERA+8,0x03E80003u);psx_mod_write_word(CAMERA+20,0x03E80000u);
+    psx_mod_write_word(saved_camera(1,0)+8,0x03E80003u);
+    psx_mod_write_word(saved_camera(1,0)+20,0x03E80000u);
+    psx_mod_write_word(saved_camera(0,0)+8,0x06400000u);
+    psx_mod_write_word(saved_camera(0,0)+20,0x06400003u);
+    first_x=psx_mod_read_word(saved_camera(0,1)+8);
+    second_x=psx_mod_read_word(saved_camera(1,1)+8);
+    uint32_t first_far=psx_mod_read_word(saved_camera(0,2)+8);
+    uint32_t second_far=psx_mod_read_word(saved_camera(1,2)+8);
+    unsigned foreground_calls=train_foreground_calls;calls=train_calls;
+    invoke(cpu,0x800D9218u);
+    CHECK(train_calls==calls+1 && train_foreground_calls==foreground_calls+1);
+    CHECK(psx_mod_read_word(saved_camera(1,1)+8)==second_x+0x80003u);
+    CHECK(psx_mod_read_word(saved_camera(0,1)+8)==first_x+0x7FFFDu);
+    CHECK(psx_mod_read_word(saved_camera(1,2)+8)==second_far+0x40001u);
+    CHECK(psx_mod_read_word(saved_camera(0,2)+8)==first_far+0x3FFFEu);
+    CHECK(psx_mod_read_word(CAMERA+0x54u+8)==second_x+0x80003u);
+    CHECK(psx_mod_read_word(saved_camera(0,0)+8)==0x06400000u);
+    CHECK(psx_mod_read_word(saved_camera(1,0)+8)==0x03E80003u);
+    /* BC freeze excludes foreground contribution, while world speed remains. */
+    psx_mod_write_byte(MMX4_PLAYER+0xBC,1);
+    first_x=psx_mod_read_word(saved_camera(0,1)+8);
+    second_x=psx_mod_read_word(saved_camera(1,1)+8);
+    invoke(cpu,0x800D9218u);
+    CHECK(psx_mod_read_word(saved_camera(0,1)+8)==first_x+0x80000u);
+    CHECK(psx_mod_read_word(saved_camera(1,1)+8)==second_x+0x80000u);
+    psx_mod_write_byte(MMX4_PLAYER+0xBC,0);
+    /* +7 transitions from0 to1 only after stopping. That tick adds no
+     * foreground motion despite the resulting +7, but shares authored limits. */
+    psx_mod_write_byte(actor+7,0);psx_mod_write_word(actor+0x18,0);
+    first_x=psx_mod_read_word(saved_camera(0,1)+8);
+    second_x=psx_mod_read_word(saved_camera(1,1)+8);
+    invoke(cpu,0x800D9218u);CHECK(psx_mod_read_byte(actor+7)==1);
+    CHECK(psx_mod_read_word(saved_camera(0,1)+8)==first_x);
+    CHECK(psx_mod_read_word(saved_camera(1,1)+8)==second_x);
+    CHECK(psx_mod_read_half(saved_camera(0,0)+0x1C)==9440);
+    CHECK(psx_mod_read_half(saved_camera(1,0)+0x24)==9440);
+    /* Crossing a region resets stale phase1 flags before native dispatch. */
+    psx_mod_write_word(actor+0x18,0x80000u);actor_position(MMX4_PLAYER,9472,395);
+    first_x=psx_mod_read_word(saved_camera(0,1)+8);foreground_calls=train_foreground_calls;
+    invoke(cpu,0x800D9218u);
+    CHECK(train_foreground_calls==foreground_calls);
+    CHECK(psx_mod_read_word(saved_camera(0,1)+8)==first_x+0x80000u);
+    /* Local draw, player projection, cleanup, wrong kind, and another stage
+     * never apply a shared delta to private camera state. */
+    uint32_t digest=mmx4_coop_split_digest(2166136261u);
+    local_scope=1;invoke(cpu,0x800D9218u);local_scope=0;
+    CHECK(mmx4_coop_split_digest(2166136261u)==digest);
+    projected=1;invoke(cpu,0x800D9218u);projected=0;
+    CHECK(mmx4_coop_split_digest(2166136261u)==digest);
+    psx_mod_write_byte(actor+4,2);invoke(cpu,0x800D9218u);
+    CHECK(mmx4_coop_split_digest(2166136261u)==digest);
+    psx_mod_write_byte(actor+4,1);psx_mod_write_byte(actor+1,0);
+    invoke(cpu,0x800D9218u);
+    CHECK(mmx4_coop_split_digest(2166136261u)==digest);
+    psx_mod_write_byte(actor+1,2);psx_mod_write_byte(MMX4_PLAY+12,1);
+    invoke(cpu,0x800D9218u);
+    CHECK(mmx4_coop_split_digest(2166136261u)==digest);
+    /* A native scene shares complete cameras, retaining one shared actor pass. */
+    psx_mod_write_byte(MMX4_PLAY+12,8);script_owner=1;mmx4_coop_split_camera(cpu,1);
+    invoke(cpu,0x800D9218u);
+    CHECK(psx_mod_read_word(saved_camera(0,1)+8)==psx_mod_read_word(saved_camera(1,1)+8));
+    script_owner=-1;
+    /* First update after section reset initializes both before the native
+     * call: initialization metadata/8px delta are applied exactly once. */
+    psx_mod_write_byte(MMX4_PLAY+13,0);
+    psx_mod_write_word(CAMERA+0x54u+8,0xFFFFFFFEu);
+    psx_mod_write_word(CAMERA+0xA8u+8,0x00000002u);
+    psx_mod_write_word(CAMERA+20,psx_mod_read_word(CAMERA+8));
+    psx_mod_write_byte(actor+1,0);psx_mod_write_byte(actor+4,0);
+    mmx4_coop_split_reset();calls=train_calls;invoke(cpu,0x800D8648u);
+    CHECK(train_calls==calls+1);
+    CHECK(psx_mod_read_word(saved_camera(0,1)+8)==0x0007FFFEu);
+    CHECK(psx_mod_read_word(saved_camera(1,1)+8)==0x0007FFFEu);
+    CHECK(psx_mod_read_word(saved_camera(0,2)+8)==0x00040002u);
+    CHECK(psx_mod_read_word(CAMERA+0x54u+8)==0x0007FFFEu);
+    CHECK(psx_mod_read_byte(saved_camera(0,1)+0x4E)==7);
+    CHECK(psx_mod_read_byte(saved_camera(1,2)+0x4E)==5);
+    CHECK(psx_mod_read_half(saved_camera(0,0)+0x2C)==48);
+    CHECK(psx_mod_read_half(saved_camera(1,0)+0x2E)==160);
+    CHECK(psx_mod_read_word(saved_camera(0,0)+8)==psx_mod_read_word(CAMERA+8));
+    CHECK(psx_mod_read_word(saved_camera(1,0)+8)==psx_mod_read_word(CAMERA+8));
+    /* Exercise the last actual four-slot scenery body via original dispatch.
+     * Neither earlier20/32 pool nor a wrong end address satisfies this. */
+    uint32_t last=0x80169D48u;
+    psx_mod_write_byte(actor,0);
+    psx_mod_write_byte(last,0x81);psx_mod_write_byte(last+1,0);
+    psx_mod_write_byte(last+4,1);psx_mod_write_word(last+0x18,0x80000u);
+    first_x=psx_mod_read_word(saved_camera(0,1)+8);
+    second_x=psx_mod_read_word(saved_camera(1,1)+8);calls=train_calls;
+    train_pool_tick(cpu);CHECK(train_calls==calls+1);
+    CHECK(psx_mod_read_word(saved_camera(0,1)+8)==first_x+0x80000u);
+    CHECK(psx_mod_read_word(saved_camera(1,1)+8)==second_x+0x80000u);
+    psx_mod_write_byte(last,0);
+    /* Reject the old empty pool, both bounds, and a misaligned body even
+     * when each has matching kind/state/speed and original camera writes. */
+    const uint32_t outside[]={0x801410C0u,0x801435B0u,0x80169C88u,0x80169D78u,0x80169D49u};
+    digest=mmx4_coop_split_digest(2166136261u);
+    for(unsigned index=0;index<sizeof outside/sizeof outside[0];++index) {
+        cpu->gpr[4]=outside[index];
+        psx_mod_write_byte(outside[index]+1,0);psx_mod_write_byte(outside[index]+4,1);
+        psx_mod_write_word(outside[index]+0x18,0x80000u);calls=train_calls;
+        invoke(cpu,0x800D8648u);CHECK(train_calls==calls+1);
+        CHECK(mmx4_coop_split_digest(2166136261u)==digest);
+    }
+    cpu->gpr[4]=actor;psx_mod_write_byte(actor,0x81);
+    /* Unified calls the original once and allocates no private camera state. */
+    split=0;CHECK(mmx4_coop_split_activate());
+    calls=train_calls;invoke(cpu,0x800D8648u);CHECK(train_calls==calls+1);
+    CHECK(!mmx4_coop_split_camera_copy(1,view));
+    psx_mod_write_byte(MMX4_PLAY+12,0);psx_mod_write_byte(MMX4_PLAY+13,0);
 }
 int main(void) {
     CPUState cpu={0};cpu.gpr[29]=0x801FF000u;
@@ -306,15 +563,34 @@ int main(void) {
     CHECK(mmx4_coop_split_scene_camera_begin(1,canonical));
     psx_mod_write_half(CAMERA+0x26,1024);mmx4_coop_split_scene_camera_end(1,canonical,1);
     script_owner=1;mmx4_coop_split_camera_prepare(1);CHECK(psx_mod_read_half(CAMERA+0x26)==1024);
-    script_owner=-1;split=0;CHECK(mmx4_coop_split_activate());
+    /* The Cyber world flips once, and both saved views must follow it.
+     * Fractional current/target Y survives two reflections exactly. */
+    for(unsigned seat=0;seat<2;++seat)for(unsigned layer=0;layer<3;++layer) {
+        uint32_t camera=0x801F0000u+16u+seat*0xFCu+layer*0x54u;
+        psx_mod_write_word(camera+12,0x01234567u);psx_mod_write_word(camera+24,0x02345678u);
+    }
+    mmx4_coop_split_flip_cameras();
+    for(unsigned seat=0;seat<2;++seat)for(unsigned layer=0;layer<3;++layer) {
+        uint32_t camera=0x801F0000u+16u+seat*0xFCu+layer*0x54u;
+        uint32_t axis=layer?0x09000000u:0x07000000u;
+        CHECK(psx_mod_read_word(camera+12)==axis-0x01234567u);
+        CHECK(psx_mod_read_word(camera+24)==axis-0x02345678u);
+        CHECK(psx_mod_read_byte(camera+0x4C)==1);
+    }
+    mmx4_coop_split_flip_cameras();
+    CHECK(psx_mod_read_word(0x801F0000u+16u+12u)==0x01234567u);
+    script_owner=-1;train_backgrounds(&cpu);split=0;CHECK(mmx4_coop_split_activate());
     /* Unified has no private camera storage, but either living seat must
      * activate the authored secret-room bounds/checkpoint once. */
     psx_mod_write_byte(stage_actor+1,0);
     actor_position(MMX4_PLAYER,100,140);second_position(1200,2000);
     psx_mod_write_half(CAMERA+0x26,0);psx_mod_write_half(CAMERA+0x2C,160);
     area_calls=shared_area_writes=0;cpu.gpr[4]=stage_actor;
+    psx_mod_write_half(CAMERA+0x24,4096);psx_mod_write_half(CAMERA+0x28,2500);
+    psx_mod_write_half(CAMERA+0x2A,0);
     invoke(&cpu,0x800B56F4u);
     CHECK(area_calls==1 && shared_area_writes==1 && !projected);
+    CHECK(room_entries==1 && room_owner==1); /* New shared min-X excludes P1. */
     CHECK(psx_mod_read_half(CAMERA+0x26)==512 && psx_mod_read_half(CAMERA+0x2C)==64);
     CHECK(psx_mod_read_half(MMX4_PLAYER+10)==100);
     psx_mod_write_byte(stage_actor+1,6);checkpoint_calls=0;

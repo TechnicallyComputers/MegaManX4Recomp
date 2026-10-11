@@ -44,6 +44,7 @@ def main():
     parser.add_argument('--cameras', choices=('unified', 'split'), default='unified')
     parser.add_argument('--campaign', type=int, choices=(0, 1), default=0)
     parser.add_argument('--doors', action='store_true', help='Also traverse the P2-led Cyber door')
+    parser.add_argument('--train-only',action='store_true',help='Qualify both Slash Split background panes and CRCs')
     parser.set_defaults(latency=0, jitter=0, seed=714, delay=2,
                         frontend='headless-opengl', boot_timeout=100, phase_timeout=35)
     args = parser.parse_args()
@@ -74,6 +75,42 @@ def main():
         exercise = Exercise(args, peers, report)
         exercise.boot(args.campaign)
         debug = NetplayDevelopment(ports[2], ports[3])
+        if args.train_only:
+            if args.cameras!='split':raise ValueError('Train scenery qualification requires --cameras split')
+            from mmx4_netplay_runtime import NetplayRuntime
+            from mmx4_web_probe import Probe
+            runtime=NetplayRuntime(debug)
+            output=args.output/'train-background';output.mkdir()
+            probe=Probe(runtime,output,args.campaign)
+            trace_targets=(0x800D8648,0x800D9218,0x800D964C,0x80021A20,0x8002196C)
+            for target in trace_targets:peers[0].request('fntrace_arm',target=hex(target))
+            peers[0].request('wtrace_arm',lo='0x801419B0',hi='0x80141AAC')
+            try:
+                for owner in (1,0):
+                    probe.train_background(owner,2)
+                    captures=[]
+                    for frame in (0,1):
+                        for peer in peers:
+                            shot=output/f'train-owner-{owner}-peer-{peer.seat}-frame-{frame}.png'
+                            peer.request('screenshot_hires',path=str(shot))
+                            captures.append(str(shot))
+                        time.sleep(.2)
+                    probe.cases[-1]['both_peer_captures']=captures
+                    tick=min(peer.status()['tick'] for peer in peers)
+                    exercise.checkpoint('native Slash backgrounds owner '+str(owner),tick,min_digests=2)
+            finally:
+                runtime.release()
+                traces={hex(target):peers[0].request('fntrace_dump',
+                    target_lo=hex(target),target_hi=hex(target+4),count=128)
+                    for target in trace_targets}
+                traces['camera_writes']=peers[0].request('wtrace_dump',count=128,newest=1,
+                    addr_lo='0x80141A04',addr_hi='0x80141AAC')
+                (output/'native-traces.json').write_text(json.dumps(traces,indent=2))
+                (output/'stage-interactions.json').write_text(json.dumps(
+                    dict(cases=probe.cases,events=probe.events),indent=2))
+            report.update(status='passed',train_background_owners=2)
+            print('Split netplay: both native Slash backgrounds advance with matching peer CRCs',flush=True)
+            return
         debug.fixture(5, 3)
         debug.teleport(1, 160, 136)
         exercise.wait_ticks(12)

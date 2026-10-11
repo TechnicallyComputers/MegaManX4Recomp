@@ -18,6 +18,8 @@
 #define PARTICLE_INIT 0x800CAE38u
 #define PARTICLE 0x80173CA0u
 #define WATER 0x800AF22Cu
+#define SLIDE_EFFECT 0x800AEAC0u
+#define DASH_EFFECT 0x800AED18u
 #define MIRROR 0x80110000u
 #define ARMOR_UPDATE 0x8003D3F8u
 #define ARMOR_MOUNT 0x8003E0D0u
@@ -32,7 +34,13 @@ typedef struct { uint32_t address; PSXModFunctionFilterCallback callback; } Filt
 static Filter filters[32];
 static unsigned filter_count;
 int psx_mod_local_view_scope(void) {return 0;}
+int mmx4_coop_web_busy(void) {return 0;}
+int mmx4_coop_web_contact(CPUState *cpu,uint32_t address) {(void)cpu;(void)address;return 0;}
+void mmx4_coop_web_forget(uint32_t actor,unsigned owner) {(void)actor;(void)owner;}
+void mmx4_coop_web_reset(void) {}
+uint32_t mmx4_coop_web_digest(uint32_t seed) {return seed;}
 static uint8_t ram[0x200000];
+static uint8_t scratchpad[1024];
 static uint8_t second[0xE4], first_saved[0xE4];
 static uint8_t second_vehicle[0xB0], first_vehicle[0xB0];
 static uint8_t second_double[0xE4], first_double[0xE4];
@@ -57,9 +65,14 @@ static uint8_t attack_token[2];
 static unsigned particle_initializations,particle_character;
 static unsigned water_updates;
 static unsigned charge_updates;
+static unsigned weapon_uploads;
+static unsigned attached_effect_updates[2][2];
+static uint32_t second_assembly,saved_assembly;
 
 static uint8_t *address_ptr(uint32_t address) {
     uint32_t physical=address&0x1FFFFFFFu;
+    if(physical>=0x1F800000u && physical<0x1F800000u+sizeof scratchpad)
+        return scratchpad+(physical-0x1F800000u);
     CHECK(physical<sizeof ram);
     return ram+physical;
 }
@@ -130,6 +143,8 @@ void mmx4_coop_enter_second(void) {
     memcpy(address_ptr(DOUBLE_BODY),second_double,sizeof second_double);
     saved_campaign=psx_mod_read_byte(MMX4_PLAY+0x43);
     psx_mod_write_byte(MMX4_PLAY+0x43,second[2]);
+    saved_assembly=psx_mod_read_word(0x1F80001Cu);
+    psx_mod_write_word(0x1F80001Cu,second_assembly);
     projected=1;
 }
 void mmx4_coop_leave_second(void) {
@@ -142,6 +157,7 @@ void mmx4_coop_leave_second(void) {
     memcpy(address_ptr(DOUBLE_BODY),first_double,sizeof first_double);
     CHECK(psx_mod_read_byte(MMX4_PLAY+0x43)==second[2]);
     psx_mod_write_byte(MMX4_PLAY+0x43,saved_campaign);
+    psx_mod_write_word(0x1F80001Cu,saved_assembly);
     projected=0;
 }
 int mmx4_coop_finish(CPUState *cpu,uint32_t result) { cpu->gpr[2]=result;return 1; }
@@ -214,7 +230,7 @@ uint32_t mmx4_coop_call(CPUState *cpu,uint32_t address,uint32_t a0,uint32_t a1) 
             psx_mod_write_byte(allocated_actor+0x65,0);
         return allocated_actor;
     }
-    if(address==PARTICLE_INIT) {
+    if(address==PARTICLE_INIT || address==0x8009485Cu || address==0x80098474u) {
         ++particle_initializations;particle_character=psx_mod_read_byte(MMX4_PLAYER+2);
         /* CAE38 reads these fields and P2's projected character assembly.
          * Its native movement/draw remains one call at the shared pool tick. */
@@ -223,6 +239,46 @@ uint32_t mmx4_coop_call(CPUState *cpu,uint32_t address,uint32_t a0,uint32_t a1) 
         psx_mod_write_byte(a0+0x14,psx_mod_read_byte(MMX4_PLAYER+0x14));
         psx_mod_write_byte(a0+4,1);
         return 0xABCDEF01u;
+    }
+    if(address==0x800B2A3Cu) {
+        ++weapon_uploads;
+        CHECK(projected && !psx_mod_read_byte(MMX4_PLAYER+2));
+        /* Original27 reads the current character's sprite header before
+         * its one-shot upload and deallocation. Do not advance either body. */
+        psx_mod_write_word(a0+0x38,psx_mod_read_word(MMX4_PLAYER+0x38));
+        psx_mod_write_byte(a0,0);
+        return 0x10203040u;
+    }
+    if(address==SLIDE_EFFECT || address==DASH_EFFECT) {
+        unsigned dash=address==DASH_EFFECT;
+        ++attached_effect_updates[seat][dash];
+        uint32_t owner=psx_mod_read_byte(MMX4_PLAYER+0xDE)?DOUBLE_BODY:MMX4_PLAYER;
+        unsigned character=psx_mod_read_byte(owner+2);
+        unsigned state=psx_mod_read_byte(a0+4);
+        if(!state) {
+            /* Original AEB38/AED64 reads the current assembly header only
+             * when the shared effect first initializes, after allocation. */
+            uint32_t assembly=psx_mod_read_word(0x1F80001Cu);
+            psx_mod_write_word(a0+0x3C,assembly+psx_mod_read_word(assembly+4));
+            psx_mod_write_byte(a0+3,1);psx_mod_write_byte(a0+4,1);
+        }else if(dash && psx_mod_read_byte(owner+0x17)!=0x12) {
+            /* Native AEE04 rejects an idle body for normal ground Dash.
+             * Reading P1 here would also erase P2's exhaust prematurely. */
+            psx_mod_write_byte(a0,0);psx_mod_write_byte(a0+3,0);
+            return 0xAABBCCDDu;
+        }else if(!dash && psx_mod_read_byte(owner+5)!=11 && psx_mod_read_byte(owner+5)!=52) {
+            psx_mod_write_byte(a0+4,2);return 0xAABBCCDDu;
+        }
+        /* Native AEC9C/AEE5C selects character offsets and facing, writing
+         * only the integer coordinate halfwords and preserving fractions. */
+        int dx=dash?(character?36:32):10,dy=dash?(character?14:12):(character?25:17);
+        uint8_t facing=psx_mod_read_byte(owner+0x15);
+        int x=(int16_t)psx_mod_read_half(owner+10)+(facing?-dx:dx);
+        int y=(int16_t)psx_mod_read_half(owner+14)+dy;
+        psx_mod_write_byte(a0+0x15,facing);
+        psx_mod_write_word(a0+8,(psx_mod_read_word(a0+8)&0xFFFFu)|((uint32_t)(uint16_t)x<<16));
+        psx_mod_write_word(a0+12,(psx_mod_read_word(a0+12)&0xFFFFu)|((uint32_t)(uint16_t)y<<16));
+        return 0xAABBCCDDu;
     }
     if(address==0x800AEED8u) {
         ++charge_updates;
@@ -299,6 +355,9 @@ static void clear_calls(void) {
 }
 static void setup(void) {
     memset(ram,0,sizeof ram);
+    memset(scratchpad,0,sizeof scratchpad);
+    second_assembly=saved_assembly=0;
+    memset(attached_effect_updates,0,sizeof attached_effect_updates);
     memset(second,0,sizeof second);
     memset(second_vehicle,0,sizeof second_vehicle);
     memset(second_double,0,sizeof second_double);
@@ -332,7 +391,9 @@ static uint32_t invoke(uint32_t address) {
     return cpu.gpr[2];
 }
 static void death_particle_ownership(void) {
-    for(unsigned character=0;character<2;++character) {
+    const uint32_t routines[]={PARTICLE_INIT,0x8009485Cu,0x80098474u};
+    const uint8_t kinds[]={0x11,47,48};
+    for(unsigned effect=0;effect<3;++effect)for(unsigned character=0;character<2;++character) {
         setup();second[2]=(uint8_t)character;
         psx_mod_write_byte(MMX4_PLAYER+2,(uint8_t)(1-character));
         psx_mod_write_byte(MMX4_PLAY+0x43,(uint8_t)(1-character));
@@ -340,16 +401,16 @@ static void death_particle_ownership(void) {
         mmx4_coop_enter_second();CHECK(invoke(PARTICLE_ALLOC)==PARTICLE);mmx4_coop_leave_second();
         /* P2 is dead; it can even rejoin elsewhere before deferred init. */
         alive[1]=0;second[10]=99;second[14]=77;second[0x14]=8;
-        psx_mod_write_byte(PARTICLE+1,0x11);
+        psx_mod_write_byte(PARTICLE+1,kinds[effect]);
         uint8_t p1[sizeof second],p2[sizeof second];
         memcpy(p1,address_ptr(MMX4_PLAYER),sizeof p1);memcpy(p2,second,sizeof p2);
         CPUState cpu={0};cpu.gpr[4]=PARTICLE;
-        CHECK(filter(PARTICLE_INIT)(&cpu,PARTICLE_INIT) && cpu.gpr[2]==0xABCDEF01u);
+        CHECK(filter(routines[effect])(&cpu,routines[effect]) && cpu.gpr[2]==0xABCDEF01u);
         CHECK(particle_initializations==1 && particle_character==character);
         CHECK(psx_mod_read_word(PARTICLE+8)==30u<<16 && psx_mod_read_word(PARTICLE+12)==20u<<16);
         CHECK(psx_mod_read_byte(PARTICLE+0x14)==7 && !projected);
         CHECK(!memcmp(p1,address_ptr(MMX4_PLAYER),sizeof p1) && !memcmp(p2,second,sizeof p2));
-        CHECK(!filter(PARTICLE_INIT)(&cpu,PARTICLE_INIT));
+        CHECK(!filter(routines[effect])(&cpu,routines[effect]));
         /* A P1 allocation reusing the slot must clear its former P2 owner. */
         mmx4_coop_enter_second();invoke(PARTICLE_ALLOC);mmx4_coop_leave_second();
         invoke(PARTICLE_ALLOC);psx_mod_write_byte(PARTICLE+4,0);
@@ -448,6 +509,8 @@ static void effect_ownership(void) {
     /* Enrollment creates the Chaser's following effects before ready(). */
     ready=0;mmx4_coop_enter_second();CHECK(invoke(EFFECT_ALLOC)==EFFECT);
     psx_mod_write_byte(EFFECT,0x41);
+    psx_mod_write_byte(EFFECT+1,0x0D);
+    CHECK(mmx4_coop_vehicle_effect_owner(EFFECT)==2);
     psx_mod_write_word(EFFECT+0x50,MMX4_VEHICLE);
     psx_mod_write_byte(EFFECT+0x70,0x41);
     psx_mod_write_word(EFFECT+0x70+0x50,MMX4_VEHICLE);
@@ -600,10 +663,123 @@ static void split_native_targets(void) {
     setup();CPUState cpu={0};cpu.gpr[2]=NATIVE_AI;cpu.gpr[4]=0x8013BED0u;
     redirects[0](&cpu,0x80021300u);CHECK(cpu.gpr[2]==NATIVE_AI);
 }
+static void slash_intro_leader(void) {
+    for(unsigned leader=0;leader<2;++leader) {
+        setup_split_actors(0);
+        psx_mod_write_byte(MMX4_PLAY+0x0C,8);psx_mod_write_byte(MMX4_PLAY+0x0D,1);
+        const uint32_t actor=0x8013BED0u;
+        psx_mod_write_byte(actor+0x9C,0);
+        psx_mod_write_byte(actor+1,54);psx_mod_write_byte(actor+4,1);
+        psx_mod_write_byte(actor+5,9);psx_mod_write_byte(actor+6,0);
+        psx_mod_write_word(MMX4_PLAYER+8,(leader?9360u:9500u)<<16);
+        second[10]=(uint8_t)(leader?9500u:9360u);second[11]=(uint8_t)((leader?9500u:9360u)>>8);
+        psx_mod_write_word(actor+8,9312u<<16);
+        invoke(0x80021234u);
+        CHECK(actor_updates[leader]==1 && !actor_updates[leader^1]);
+        CHECK(ai_target_x[leader]==9500u<<16 && !projected);
+        /* Outside the entrance gate, regular fight targeting remains nearest. */
+        memset(actor_updates,0,sizeof actor_updates);psx_mod_write_byte(actor+6,1);
+        invoke(0x80021234u);
+        CHECK(actor_updates[leader^1]==1 && !actor_updates[leader]);
+        memset(actor_updates,0,sizeof actor_updates);psx_mod_write_byte(actor+6,0);
+        script_owner=(int)(leader^1);invoke(0x80021234u);
+        CHECK(actor_updates[leader^1]==1 && !actor_updates[leader]);
+    }
+}
+static void vehicle_secondary_ownership(void) {
+    for(unsigned seat=0;seat<2;++seat)for(unsigned type=56;type<=57;++type) {
+        setup();const uint32_t actor=0x8013F328u;
+        allocated_actor=actor;ready=0; /* Original enrollment creates exhaust. */
+        if(seat)mmx4_coop_enter_second();
+        CHECK(invoke(0x8002ACA4u)==actor);
+        if(seat)mmx4_coop_leave_second();
+        ready=1;psx_mod_write_byte(actor,1);psx_mod_write_byte(actor+1,(uint8_t)type);
+        psx_mod_write_word(actor+8,(seat?10u:30u)<<16); /* Other rider is nearest. */
+        CHECK(mmx4_coop_vehicle_effect_owner(actor)==seat+1);
+        invoke(0x8002144Cu);
+        CHECK(actor_updates[seat]==1 && !actor_updates[seat^1]);
+        CHECK(ai_target_x[seat]==(seat?30u:10u)<<16 && !projected);
+        alive[seat]=0;invoke(0x8002144Cu);
+        CHECK(actor_updates[seat]==2); /* Native cleanup still advances. */
+        if(!seat)mmx4_coop_enter_second();
+        invoke(0x8002ACA4u);
+        if(!seat)mmx4_coop_leave_second();
+        CHECK(mmx4_coop_vehicle_effect_owner(actor)==(seat^1)+1);
+        psx_mod_write_byte(actor+1,1);CHECK(!mmx4_coop_vehicle_effect_owner(actor));
+    }
+}
+static void attached_dash_slide_effects(void) {
+    for(unsigned campaign=0;campaign<2;++campaign)
+    for(unsigned double_owner=0;double_owner<2;++double_owner)
+    for(unsigned right=0;right<2;++right)
+    for(unsigned dash=0;dash<2;++dash) {
+        setup();unsigned character=campaign^1u;
+        uint32_t address=dash?DASH_EFFECT:SLIDE_EFFECT;
+        uint8_t *owner=double_owner?second_double:second;
+        psx_mod_write_byte(MMX4_PLAY+0x43,(uint8_t)campaign);
+        psx_mod_write_byte(MMX4_PLAYER+2,(uint8_t)campaign);
+        psx_mod_write_byte(MMX4_PLAYER+5,2); /* P1 stays idle while P2 moves. */
+        second[2]=second_double[2]=(uint8_t)character;
+        second[0xDE]=(uint8_t)double_owner;
+        owner[5]=(uint8_t)(dash?12:11);owner[0x17]=(uint8_t)(dash?0x12:0x0F);
+        owner[0x15]=(uint8_t)(right?0x40:0);
+        owner[10]=(uint8_t)(double_owner?120:80);owner[14]=(uint8_t)(double_owner?60:40);
+        const uint32_t primary_assembly=0x80115000u;
+        second_assembly=0x80116000u;
+        psx_mod_write_word(0x1F80001Cu,primary_assembly);
+        psx_mod_write_word(primary_assembly+4,0x80);
+        psx_mod_write_word(second_assembly+4,0x120);
+        allocated_actor=EFFECT;
+        mmx4_coop_enter_second();invoke(EFFECT_ALLOC);mmx4_coop_leave_second();
+        /* Both native creators leave origin/assembly deferred at state0. */
+        psx_mod_write_byte(EFFECT,0x21);psx_mod_write_byte(EFFECT+1,(uint8_t)dash);
+        psx_mod_write_word(EFFECT+8,0x00001234u);psx_mod_write_word(EFFECT+12,0x00005678u);
+        uint8_t p1[sizeof second],p2[sizeof second],p2_double[sizeof second_double];
+        memcpy(p1,address_ptr(MMX4_PLAYER),sizeof p1);
+        memcpy(p2,second,sizeof p2);memcpy(p2_double,second_double,sizeof p2_double);
+        CPUState update={.gpr={[4]=EFFECT}};
+        CHECK(filter(address)(&update,address) && update.gpr[2]==0xAABBCCDDu);
+        CHECK(attached_effect_updates[1][dash]==1 && !attached_effect_updates[0][dash] && !projected);
+        int dx=dash?(character?36:32):10,dy=dash?(character?14:12):(character?25:17);
+        int x=(double_owner?120:80)+(right?-dx:dx),y=(double_owner?60:40)+dy;
+        CHECK(psx_mod_read_word(EFFECT+8)==((uint32_t)x<<16|0x1234u));
+        CHECK(psx_mod_read_word(EFFECT+12)==((uint32_t)y<<16|0x5678u));
+        CHECK(psx_mod_read_byte(EFFECT+0x15)==(right?0x40:0));
+        CHECK(psx_mod_read_word(EFFECT+0x3C)==second_assembly+0x120);
+        CHECK(psx_mod_read_word(0x1F80001Cu)==primary_assembly);
+        CHECK(!memcmp(p1,address_ptr(MMX4_PLAYER),sizeof p1));
+        CHECK(!memcmp(p2,second,sizeof p2) && !memcmp(p2_double,second_double,sizeof p2_double));
+        /* Follow the allocating owner, not the nearer or idle canonical body.
+         * A native pool tick updates this effect exactly once. */
+        owner[10]+=7;psx_mod_write_word(MMX4_PLAYER+8,300u<<16);
+        CHECK(filter(address)(&update,address));
+        CHECK(attached_effect_updates[1][dash]==2 && !attached_effect_updates[0][dash]);
+        CHECK(psx_mod_read_word(EFFECT+8)==((uint32_t)(x+7)<<16|0x1234u));
+        CHECK(psx_mod_read_byte(EFFECT) && psx_mod_read_byte(EFFECT+3) && !projected);
+        /* The owner's native pose controls cleanup even when P1 starts Dash. */
+        owner[5]=2;owner[0x17]=0;psx_mod_write_byte(MMX4_PLAYER+0x17,0x12);
+        CHECK(filter(address)(&update,address));
+        CHECK(attached_effect_updates[1][dash]==3 && !attached_effect_updates[0][dash]);
+        CHECK(dash?!psx_mod_read_byte(EFFECT):psx_mod_read_byte(EFFECT+4)==2);
+        /* Reallocation by P1 clears the old P2 sidecar; the filter declines,
+         * and the native canonical pass binds P1 resources without projecting. */
+        invoke(EFFECT_ALLOC);psx_mod_write_byte(EFFECT,0x21);psx_mod_write_byte(EFFECT+4,0);
+        CHECK(!filter(address)(&update,address));
+        CHECK(mmx4_coop_call(&update,address,EFFECT,0)==0xAABBCCDDu);
+        CHECK(attached_effect_updates[0][dash]==1 && !projected);
+        CHECK(psx_mod_read_word(EFFECT+0x3C)==primary_assembly+0x80);
+        CHECK(psx_mod_read_word(0x1F80001Cu)==primary_assembly);
+    }
+    /* Effect3 carries its allocated world origin and resource pointers.
+     * No owner projection is installed for its shared native animation. */
+    for(unsigned i=0;i<filter_count;++i)CHECK(filters[i].address!=0x800AF6A0u);
+}
 int main(void) {
-    CHECK(filter_count==17);
     accepted_events();independent_solids();aim_selection();effect_ownership();armor_handoff();independent_hit_tokens();
     split_native_targets();
+    slash_intro_leader();
+    vehicle_secondary_ownership();
+    attached_dash_slide_effects();
     death_particle_ownership();
     for(unsigned campaign=0;campaign<2;++campaign)for(unsigned target=0;target<2;++target) {
         setup();water_updates=0;
@@ -621,6 +797,25 @@ int main(void) {
         CHECK(psx_mod_read_word(MMX4_PLAYER+8)==20u<<16);
         /* Reusing this shared effect slot for P1 clears P2 ownership. */
         invoke(EFFECT_ALLOC);CHECK(!filter(WATER)(&(CPUState){.gpr={[4]=EFFECT}},WATER));
+    }
+    /* Ground Hunter's deferred one-shot graphics upload must bind X/P2 even
+     * if that owner has died before the shared effect-pool update. */
+    for(unsigned dead=0;dead<2;++dead) {
+        setup();second[2]=0;psx_mod_write_byte(MMX4_PLAYER+2,1);
+        psx_mod_write_word(MMX4_PLAYER+0x38,0x800F1234u);
+        second[0x38]=0x78;second[0x39]=0x56;second[0x3A]=0x0F;second[0x3B]=0x80;
+        allocated_actor=EFFECT;
+        mmx4_coop_enter_second();invoke(EFFECT_ALLOC);mmx4_coop_leave_second();
+        psx_mod_write_byte(EFFECT,1);psx_mod_write_byte(EFFECT+1,27);
+        alive[1]=!dead;weapon_uploads=0;
+        uint8_t p1[sizeof second],p2[sizeof second];
+        memcpy(p1,address_ptr(MMX4_PLAYER),sizeof p1);memcpy(p2,second,sizeof p2);
+        CPUState upload={.gpr={[4]=EFFECT}};
+        CHECK(filter(0x800B2A3Cu)(&upload,0x800B2A3Cu));
+        CHECK(upload.gpr[2]==0x10203040u && weapon_uploads==1 && !projected);
+        CHECK(!psx_mod_read_byte(EFFECT) && psx_mod_read_word(EFFECT+0x38)==0x800F5678u);
+        CHECK(!memcmp(p1,address_ptr(MMX4_PLAYER),sizeof p1) && !memcmp(p2,second,sizeof p2));
+        invoke(EFFECT_ALLOC);CHECK(!filter(0x800B2A3Cu)(&upload,0x800B2A3Cu));
     }
     /* X/P2's shared delayed release must use X's body and private pool,
      * without consuming Zero/P1's shot accounting. Reuse clears ownership. */

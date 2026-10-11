@@ -10,7 +10,7 @@ from coop_debug import Runtime
 
 
 def packet(sequence, command, first=0, second=0, third=0, x=0, y=0):
-    if not (1 <= sequence <= 31 and 1 <= command <= 6 and
+    if not (1 <= sequence <= 31 and 1 <= command <= 7 and
             0 <= first <= 255 and 0 <= second <= 255 and 0 <= third <= 7 and
             -32768 <= x < 32768 and -32768 <= y < 32768):
         raise ValueError('Invalid development command arguments')
@@ -71,7 +71,7 @@ class NetplayDevelopment:
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--ports', type=int, nargs=2, required=True, metavar=('HOST', 'GUEST'))
-    parser.add_argument('command', choices=('stage', 'checkpoint', 'health', 'invulnerable', 'teleport', 'enemy-health'))
+    parser.add_argument('command', choices=('stage', 'checkpoint', 'health', 'invulnerable', 'teleport', 'enemy-health','weapon'))
     parser.add_argument('values', type=int, nargs='+')
     args = parser.parse_args()
     runtime = NetplayDevelopment(*args.ports)
@@ -79,7 +79,7 @@ def main():
         runtime.teleport(*args.values)
     else:
         runtime.fixture({'stage': 1, 'health': 2, 'checkpoint': 3,
-                         'invulnerable': 5, 'enemy-health': 6}[args.command], *args.values)
+                         'invulnerable': 5, 'enemy-health': 6,'weapon':7}[args.command], *args.values)
     print('Both peers acknowledged synchronized development command', runtime.sequence)
 
 

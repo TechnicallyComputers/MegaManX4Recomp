@@ -14,10 +14,13 @@ while [ "$#" -gt 0 ]; do
     esac
 done
 [ -n "$build" ] && [ -n "$emitter" ] && [ -n "$output" ]
-if ! grep -qx 'PSX_NETPLAY:BOOL=ON' "$build/CMakeCache.txt"; then
-    echo "X4 co-op AppImage requires a build configured with -DPSX_NETPLAY=ON" >&2
-    exit 1
-fi
+for setting in PSX_NETPLAY=ON PSX_RECOMP_UI=ON PSX_DEBUG_TOOLS=OFF MMX4_COOP_NETPLAY_DEBUG=OFF; do
+    key=${setting%=*}; value=${setting#*=}
+    if ! grep -qx "$key:BOOL=$value" "$build/CMakeCache.txt"; then
+        echo "X4 public co-op AppImage requires -D$setting" >&2
+        exit 1
+    fi
+done
 version=$(tr -d '[:space:]' < "$root/packaging/release/VERSION")
 cp "$root/packaging/release/game.toml" "$build/game.toml"
 cp "$root/packaging/release/input.ini" "$build/input.ini"

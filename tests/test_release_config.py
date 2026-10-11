@@ -55,6 +55,20 @@ class ReleaseConfigTest(unittest.TestCase):
         self.assertNotIn("overlay_autocompile_cmd", player["runtime"])
         self.assertNotIn("audit", player)
 
+    def test_recompiler_hook_contract_matches_development(self):
+        # Keep the shipped codegen metadata aligned with the trusted hooks
+        # used to generate the resident game code. Order and hex case do not
+        # change the address contract.
+        dev = config(ROOT / "game.toml")["recompiler"]
+        player = config(ROOT / "packaging/release/game.toml")["recompiler"]
+        for key in ("mod_function_entry_funcs", "mod_instruction_sites"):
+            with self.subTest(key=key):
+                self.assertSetEqual(
+                    {f"0x{int(address, 0):08X}" for address in player[key]},
+                    {f"0x{int(address, 0):08X}" for address in dev[key]},
+                    f"Release {key} differs from the development hook contract",
+                )
+
 
 if __name__ == "__main__":
     unittest.main()

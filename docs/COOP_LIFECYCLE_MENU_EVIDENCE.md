@@ -558,3 +558,133 @@ Core/mod CRCs match through X 8619 / Zero 9124, including both menus and
 native disconnect. Survivor/retry OpenGL captures were inspected. All ten
 title CTests pass. This qualifies that online death/retry path; online
 boss-door conversation and complete campaigns remain broader checks.
+
+## Concurrent foot arrivals and READY exit, 2026-10-10
+
+The neutral native captures in
+`build-coop-netplay-20261010/qa-x-story-dialogue-spawns-78/stationary-arrivals/`
+show blue and red incoming beams 24 pixels apart in Jungle 1/0 and Cyber 6/0
+and 6/1. Both bodies finish healthy, visible, grounded in action 2, with
+their native character floor heights differing by one pixel. The earlier
+QA75 stress fixture held Right for both bodies; the faster completed body
+could therefore walk before its partner finished. That fixture did not
+qualify a stationary landing or an offscreen body merely from a stale ground
+bit. `mmx4_arrival_probe.py --neutral` supplies neutral input from before the
+stage request and requires the standing pose and unchanged 24-pixel gap.
+
+READY overlaps while the beams descend. The saved actor pools identify one
+stage actor of type 27 and its two original particle actors of type 18,
+subtypes 0 and 1. Their `+50` parent is the same stage actor in each scene:
+`80143148` for Jungle, `80143058` for Cyber 6/0, and `80143088` for Cyber 6/1.
+The small and UI pools are empty in those completed captures. This evidence
+does not establish a second READY presentation allocated by P2.
+
+Original `800D5E5C..800D5EC0` deliberately calls allocator `8002AE50` twice,
+writes type 18/subtype 0 followed by type 18/subtype 1, and copies the same
+stage parent into each actor's `+50`. Particle callback `800CB00C` initializes
+the campaign's READY assembly at `800CB048..800CB090`. Its exit transition at
+`800CB428..800CB4C8` assigns both copies CLUT `7801`, screen position
+`160,120`, and opposite X velocities of 16 pixels per update. The original
+`800CB4E4` continuation moves these copies offscreen. QA78 captures contain
+exactly those states: `[1,2,0]`, CLUT `7801`, and symmetric X positions such
+as `208/112`, then `288/32`. Both actors retain the same assembly and frame 0.
+The visibly separated READY words therefore match this authored exit phase.
+
+The incoming body sprites remain separate: original `80035848` selects each
+body's pose through `800350A4` and sets its own velocity and `+67`. X uses
+incoming frame 126; Zero uses frames 53/54 from the distinct original
+animation tables. The `8001540C` call is positional sound and allocates no
+beam actor. Normal foot initializer `80035240` has no READY allocation to
+suppress. No render or lifecycle change was made to remove an authored READY
+copy. The authored READY exit pair is deliberately retained. There is no
+outstanding READY presentation decision. Checklist item 20 remains pending
+native qualification of the owner's expanded request for concurrent arrivals
+at all suitable spawn points.
+
+## Concurrent checkpoint and scripted returns, 2026-10-10
+
+The owner expanded item 20 beyond initial stage entry to section loads,
+checkpoints, team retries, and genuine two-body scripted returns. Native
+`80035694` chooses from `800F8B44`: foot arrival `80035848`, direct normal
+spawn `800358A4`, or Ride Chaser `80035A24`. Natural foot arrivals already
+use the concurrent path, including forward section and team retry policies
+after their original READY gate opens. The remaining direct foot selection
+is stage 3 with policy -1 and a nonzero checkpoint, or stage 6 with policy -1.
+Stage 12 also selects direct spawning for narrative cases, including section
+1/checkpoint 0 under policy -2; its special story heights and route remain
+unchanged. A boss door's still-active owner auto-walk is not a two-body spawn,
+and a manual P2 rejoin does not request another P1 beam.
+
+A one-shot marker records only canonical `800358A4` entry from the original
+`80035694` table call, return address `80035834`, under those stage/policy
+conditions. The original initializer first supplies the landing height,
+character collision box, normal pose, and camera enable state. Fresh P2
+enrollment still initializes its preferred P1-X-plus-24 position through the
+ordinary collision path. The return conversion then invokes original
+`800358A4` for P2 as well: Zero's native floor height is one pixel above X's,
+so copying a Zero/P1 Y directly into X/P2 can leave X just above the floor.
+Both bodies retain their authored world positions; the conversion does not
+raise either body or reconstruct a checkpoint descent.
+
+The P2 candidate passes existing native camera bounds `80027BE4` and terrain
+`8002C614` before conversion. Native `8002C808` writes current terrain probes
+to body `+70`; floor bit 8 with no ceiling bit 4 is required. Body `+89` is
+previous controller contact and cannot alone establish a safe landing. Only
+two healthy, visible, normal foot bodies without scene/story/vehicle locks
+qualify. Carried deaths, withdrawal, pending owner handoffs, and unsafe
+placement leave the established return behavior in place. The marker is
+consumed even on rejection, cleared by fresh/reset/frontend/stage-init/warp
+boundaries, and hashed in the deterministic lifecycle digest.
+
+An eligible pair enters its own original `80035848` once, with `+BE=0`, at
+each body's initialized floor and collision box. Shared `PLAY+1C` belongs to
+P1's original arrival completion; the private P2 controller preserves it.
+`mmx4.coop.concurrent-return-arrivals` distinguishes these conversions from
+`mmx4.coop.concurrent-stage-arrivals`, which continues to count natural
+incoming spawns. Model cases cover both rosters and either completion order,
+the one-pixel character geometry, native bounds followed by terrain, rejected
+ground/ceiling probes, caller/scene/death exclusions, and marker reset/digest.
+Native validation remains root-owned and pending.
+
+The discriminating native route is Cyber stage 6/section 0/checkpoint 1 hub
+to checkpoint 2. Start from the existing `cyber_course` hub fixture, keep both
+inputs neutral, place the team on the observed X565/Y955 platform, and place
+only the owner at X659 with native floor Y923 for X or Y922 for Zero. Let that
+owner hold Right across the authored endpoint X768, then release input.
+`800BD810` requests original script action 0x14. The assessment controller
+writes the next checkpoint at `800BD9E0` and negative transfer at `800BDA04`;
+normal stage handling writes policy -1 at `80020220`. Fixture 3 alone writes
+policy 0 and therefore does not qualify this return conversion.
+
+Checkpoint 2's original record `800F3968` supplies X72/Y512 and `+BE=3`.
+Direct `800358A4` takes Y715 from `800F8B60`, or Y714 for Zero, installs the
+character box at `800359E4`, clears `PLAY+1C` at `800359E8`, and selects normal
+action 2 through `800343A4`. Expected converted pair positions are P1-X72
+and P2-X96, with each character at its own Y715/714 and both `+BE=0`. Trace
+the canonical direct call with RA `80035834`, the P2 direct initialization,
+then one `80035848` per seat; capture simultaneous visible action-0 poses
+before waiting for both healthy/visible/grounded action-2 bodies with clear
+`+67`, no scene locks, and unchanged 24-pixel separation. The discarded
+authored `+BE=3` must not cause an extra descent after the direct floor spawn.
+
+
+Root native qualification QA83/84 passes both character arrangements. P2
+crosses the original Cyber hub1 endpoint and returns to checkpoint2 through
+policyFF: `concurrent-return-arrivals` advances once, both visible bodies
+are observed in action0, then stand at X72/96, native X Y715/Zero Y714,
+HP32, clear controls and grounded action2. Hub5 to section1 follows the
+natural paired arrival path and finishes at X328/352, Y971/970. Neutral
+QA78/82 also qualifies Jungle and both Cyber section load beams. The model
+and original-disc results qualify the shared foot initialization paths;
+authored story/vehicle/door movement and carried death/withdrawal retain
+their existing lifecycle.
+
+QA83/84 also drives the original P2-owned Intro event in both campaigns.
+Actual P2 action12 occurs while P1 remains incoming. After both finish,
+separate the healthy bodies on the observed arena floor before exercising
+either native Dash. Inspected captures show the complete primary X/Zero
+body intact and correctly colored. The two-second idle/Dash diagnostic
+windows have no severe stall or frame-rate collapse; QA83 P1 measures
+74.9/70.3 and P2 82.4/79.1 debug frames per second; QA84 P1 71.9/79.1 and
+P2 73.8/78.0. These counters do not establish production/display FPS or
+complete campaign performance.

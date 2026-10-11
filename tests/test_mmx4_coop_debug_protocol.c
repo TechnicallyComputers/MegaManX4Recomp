@@ -28,6 +28,14 @@ int main(void) {
     words[6]=mmx4_debug_checksum(words);
     for(unsigned i=0;i<7;++i)CHECK(mmx4_debug_decode(&a,encode(i,words[i]),&ra)==(i==6));
     CHECK(ra.sequence==2);
+    words[0]=0x5A3;words[1]=(1u<<3)|7u;words[2]=4u|(1u<<8);
+    words[6]=mmx4_debug_checksum(words);
+    for(unsigned i=0;i<7;++i) {
+        CHECK(mmx4_debug_decode(&a,encode(i,words[i]),&ra)==(i==6));
+        CHECK(mmx4_debug_decode(&b,encode(i,words[i]),&rb)==(i==6));
+    }
+    CHECK(ra.command==7 && ra.first==1 && ra.second==4 && ra.third==1);
+    CHECK(rb.command==ra.command && rb.second==ra.second && rb.third==ra.third);
     CHECK(!mmx4_debug_is_packet(0xFFF7));
     puts("synchronized debug protocol: passed");return 0;
 }

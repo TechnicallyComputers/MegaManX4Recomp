@@ -1,4 +1,43 @@
-# Co-op playtest 2
+# Co-op playtest 4
+
+Version: `v0.1.1-coop-playtest.4`. This release supplies a Linux x86_64
+AppImage. Windows gameplay was validated using the current development
+build; no Windows package rebuild was requested for this release.
+
+Current changes are summarized in [release notes](../RELEASE_NOTES.md).
+The stable [October 10 checklist](COOP_PLAYTEST_FEEDBACK_20261010.md) records
+the 28 reports separately; all entries are checked. All 18 title checks pass,
+and QA88 qualifies both Split scenery panes with either leading seat and
+matching peer state checks through tick8672. The public Linux build also passes
+all 18 checks and AppImage layout/reseeding tests. Hidden production launcher
+TCP smoke tests exercise the rendered Netplay button, two-player input model
+and Player 2 controller page. It requires glibc2.38 or newer. Prior release
+fingerprints and artifact hashes below remain historical evidence.
+
+Unified and Stacked remain defaults; Split remains experimental. The native
+Windows/Linux lobby, two local controller assignments, Side by side HUD
+choice and default-on Playtest Diagnostics remain available. Production
+builds require `MMX4_COOP_NETPLAY_DEBUG=OFF` and `PSX_DEBUG_TOOLS=OFF`.
+
+Prepare a fresh private Linux source snapshot with
+[stage_linux_sources.py](../tools/stage_linux_sources.py), using
+`--require-clean` after the final source and recursive pins are committed.
+After the production rebuild, use
+[package_native_appimage.sh](../tools/package_native_appimage.sh) and
+[test_appimage_layout.sh](../tools/test_appimage_layout.sh). Final execution,
+compatibility and artifact hashes must come from that candidate. The qualified
+runtime was compiled from committed source `d54daed`, framework `4b96c039`,
+UI `7ca30e31` and nested network `bb6a616c`; later release-note updates do not
+change those runtime sources. WSL builds use Linux-only PATH and
+`PSX_PYTHON=/usr/bin/python3` to avoid Windows Python shims during shader builds.
+
+## Previous co-op playtest 3
+
+Published `v0.1.1-coop-playtest.3` supplied Windows and Linux packages.
+Its [26-item checklist](COOP_PLAYTEST_REGRESSIONS.md) and validation summary
+remain under Previous in [release notes](../RELEASE_NOTES.md).
+
+## Previous co-op playtest 2
 
 Version: `v0.1.1-coop-playtest.2`. The owner-approved Windows executable is
 `60ec07fe7597cec9a1a3ad0d12ecb019c3c7ae72b4f6e1197248419151b134f1`.

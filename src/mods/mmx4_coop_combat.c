@@ -16,6 +16,9 @@
 #define EFFECT_POOL 0x8013E510u
 #define EFFECT_STRIDE 0x70u
 #define EFFECT_CAPACITY 32u
+#define SECONDARY_POOL 0x8013F328u
+#define SECONDARY_CAPACITY 32u
+#define SECONDARY_STRIDE 0x9Cu
 #define PARTICLE_ALLOCATE 0x8002AE50u
 #define PARTICLE_INITIALIZE 0x800CAE38u
 #define PARTICLE_POOL 0x80173CA0u
@@ -45,6 +48,9 @@ static unsigned combat_call, solid_call, allocation_call, aim_call;
 static unsigned effect_allocation_call;
 static unsigned personal_effect_call;
 static uint8_t second_effect_owner[EFFECT_CAPACITY];
+/* Ride Chaser types56/57 read PLAYER as well as their vehicle parent.
+ * Their allocating rider, not nearest-player AI, owns every later update. */
+static uint8_t secondary_owner[SECONDARY_CAPACITY];
 /* The type-11 death effect defers its character assembly and position reads
  * until the shared pool pass. Keep the allocation-time origin through rejoin. */
 static struct { uint32_t x,y; uint8_t owner,screen; } particles[PARTICLE_CAPACITY];
@@ -199,13 +205,33 @@ static int allocate_actor(CPUState *cpu, uint32_t address) {
     /* A private player pass can allocate shared effects/actors too. Unlike
      * collision hooks this wrapper never starts another projection, so it is
      * safe while projected and must invalidate reused slots in either seat. */
-    if (allocation_call || !mmx4_coop_ready() ||
+    if (allocation_call ||
         psx_mod_read_byte(MMX4_PLAY)!=6) return 0;
     allocation_call=1;
     uint32_t actor=mmx4_coop_call(cpu,address,cpu->gpr[4],cpu->gpr[5]);
     allocation_call=0;
     if (actor) {forget_solid(actor);forget_hit(actor);}
+    if(address==0x8002AC0Cu && actor)
+        mmx4_coop_web_forget(actor,(unsigned)(mmx4_coop_projected()!=0));
+    if(actor>=SECONDARY_POOL && actor<SECONDARY_POOL+SECONDARY_CAPACITY*SECONDARY_STRIDE &&
+       !((actor-SECONDARY_POOL)%SECONDARY_STRIDE))
+        secondary_owner[(actor-SECONDARY_POOL)/SECONDARY_STRIDE]=(uint8_t)(mmx4_coop_projected()+1);
     return mmx4_coop_finish(cpu,actor);
+}
+
+unsigned mmx4_coop_vehicle_effect_owner(uint32_t actor) {
+    if(actor>=EFFECT_POOL && actor<EFFECT_POOL+EFFECT_CAPACITY*EFFECT_STRIDE &&
+       !((actor-EFFECT_POOL)%EFFECT_STRIDE)) {
+        unsigned type=psx_mod_read_byte(actor+1);
+        if(type==0x0C || type==0x0D || type==0x0F)
+            return second_effect_owner[(actor-EFFECT_POOL)/EFFECT_STRIDE]?2u:
+                (psx_mod_read_word(actor+0x50)==MMX4_VEHICLE?1u:0u);
+        return 0;
+    }
+    if(actor<SECONDARY_POOL || actor>=SECONDARY_POOL+SECONDARY_CAPACITY*SECONDARY_STRIDE ||
+       (actor-SECONDARY_POOL)%SECONDARY_STRIDE)return 0;
+    unsigned type=psx_mod_read_byte(actor+1);
+    return type==56 || type==57?secondary_owner[(actor-SECONDARY_POOL)/SECONDARY_STRIDE]:0;
 }
 
 static int allocate_effect(CPUState *cpu, uint32_t address) {
@@ -229,7 +255,12 @@ static int personal_effect(CPUState *cpu,uint32_t address) {
        actor>=EFFECT_POOL+EFFECT_CAPACITY*EFFECT_STRIDE ||
        (actor-EFFECT_POOL)%EFFECT_STRIDE ||
        !second_effect_owner[(actor-EFFECT_POOL)/EFFECT_STRIDE])return 0;
-    /* Type 7 follows PLAYER/Double. Type 2 is X's delayed charge release:
+    /* Types0/1 defer their assembly and PLAYER/Double origin reads until
+     * the shared pool pass, then follow that owner while sliding/dashing.
+     * Type3 dust already has a fixed origin and retains its shared update.
+     * Type27 uploads Ground Hunter's compressed graphics from SCRATCH+14.
+     * This deferred pass must use the allocating X, even with Zero/P1.
+     * Type 7 follows PLAYER/Double. Type 2 is X's delayed charge release:
      * it uses the owner's assembly/pose, then allocates a native projectile
      * at 800AF0A4. Keep that allocation in the owner's private shot pool. */
     personal_effect_call=1;mmx4_coop_enter_second();
@@ -274,10 +305,11 @@ static int allocate_particle(CPUState *cpu,uint32_t address) {
     }
     return mmx4_coop_finish(cpu,actor);
 }
-static int initialize_death_particle(CPUState *cpu,uint32_t address) {
+static int initialize_character_particle(CPUState *cpu,uint32_t address) {
     uint32_t actor=cpu->gpr[4];int slot=particle_slot(actor);
+    unsigned kind=psx_mod_read_byte(actor+1);
     if(particle_init_call || !mmx4_coop_ready() || slot<0 || !particles[slot].owner ||
-       psx_mod_read_byte(actor+1)!=0x11 || psx_mod_read_byte(actor+4))return 0;
+       (kind!=0x11 && kind!=47 && kind!=48) || psx_mod_read_byte(actor+4))return 0;
     particle_init_call=1;
     int entered=!mmx4_coop_projected();
     if(entered)mmx4_coop_enter_second();
@@ -286,13 +318,15 @@ static int initialize_death_particle(CPUState *cpu,uint32_t address) {
     psx_mod_write_word(MMX4_PLAYER+8,particles[slot].x);
     psx_mod_write_word(MMX4_PLAYER+12,particles[slot].y);
     psx_mod_write_byte(MMX4_PLAYER+0x14,particles[slot].screen);
-    /* The normal projection also supplies P2's private assembly/palette.
-     * Do not require alive(): this callback belongs to an already dead seat. */
+    /* Death11 and elemental fragments47/48 defer character resources and
+     * the source body reads until the shared pool pass. Preserve their
+     * allocating origin even if that body moved, died or warped meanwhile. */
     uint32_t result=mmx4_coop_call(cpu,address,actor,cpu->gpr[5]);
     psx_mod_write_word(MMX4_PLAYER+8,x);psx_mod_write_word(MMX4_PLAYER+12,y);
     psx_mod_write_byte(MMX4_PLAYER+0x14,screen);
     if(entered)mmx4_coop_leave_second();
     particles[slot].owner=0;
+    psx_mod_counter_add("mmx4.coop.p2-character-particle-inits",1);
     particle_init_call=0;
     return mmx4_coop_finish(cpu,result);
 }
@@ -439,6 +473,8 @@ static int solid_player_contact_canonical(CPUState *cpu, uint32_t address) {
 }
 
 static int solid_player_contact(CPUState *cpu,uint32_t address) {
+    if(mmx4_coop_web_busy())return 0;
+    if(mmx4_coop_web_contact(cpu,address))return 1;
     return mmx4_coop_combat_canonical_call(cpu,address,solid_player_contact_canonical);
 }
 
@@ -503,10 +539,21 @@ static void update_actor(CPUState *cpu,uint32_t address) {
     int owner=mmx4_coop_lifecycle_script_owner();
     unsigned target=owner>=0?(unsigned)owner:mmx4_coop_view_nearest(actors,
         (int16_t)psx_mod_read_half(actor+10),(int16_t)psx_mod_read_half(actor+14),0);
+    /* Slash Beast waits at X9312 but native8006DC24 triggers on player
+     * X>=9472. Nearest-to-boss selects the partner left behind and prevents
+     * the leading seat from committing the introduction. Once C0 starts,
+     * the ordinary script-owner latch takes over. Fight AI remains nearest. */
+    if(owner<0 && actor_pool==0x80021234u &&
+       psx_mod_read_byte(MMX4_PLAY+0x0C)==8 && psx_mod_read_byte(MMX4_PLAY+0x0D)==1 &&
+       psx_mod_read_byte(actor+1)==54 && psx_mod_read_byte(actor+4)==1 &&
+       psx_mod_read_byte(actor+5)==9 && !psx_mod_read_byte(actor+6))
+        target=!actors[0].active || (actors[1].active && actors[1].world_x>actors[0].world_x);
+    unsigned vehicle_owner=actor_pool==0x8002144Cu?mmx4_coop_vehicle_effect_owner(actor):0;
+    if(vehicle_owner)target=vehicle_owner-1;
     actor_owner=target;
     actor_campaign=psx_mod_read_byte(MMX4_PLAY+0x43);
     uint32_t result=0;
-    if(actors[target].active) {
+    if(actors[target].active || vehicle_owner) {
         if(target) {
             mmx4_coop_enter_second();
             psx_mod_write_byte(MMX4_PLAY+0x43,actor_campaign);
@@ -545,8 +592,10 @@ static int survivor_actor_pool(CPUState *cpu,uint32_t address) {
 void mmx4_coop_combat_reset(void) {
     /* P2 enrollment invokes the native initializer within a projection. */
     if (mmx4_coop_projected()) return;
+    mmx4_coop_web_reset();
     memset(solids,0,sizeof solids);
     memset(second_effect_owner,0,sizeof second_effect_owner);
+    memset(secondary_owner,0,sizeof secondary_owner);
     memset(particles,0,sizeof particles);
     particle_allocation_call=particle_init_call=0;
     memset(hits,0,sizeof hits);
@@ -571,6 +620,7 @@ static uint32_t digest_word(uint32_t seed, uint32_t value) {
 }
 
 uint32_t mmx4_coop_combat_digest(uint32_t seed) {
+    seed=mmx4_coop_web_digest(seed);
     seed=digest_word(seed,solid_count);
     for (unsigned i=0;i<solid_count;++i) {
         seed=digest_word(seed,solids[i].actor);
@@ -581,6 +631,8 @@ uint32_t mmx4_coop_combat_digest(uint32_t seed) {
     }
     for (unsigned i=0;i<EFFECT_CAPACITY;++i)
         seed=digest_byte(seed,second_effect_owner[i]);
+    for(unsigned i=0;i<SECONDARY_CAPACITY;++i)
+        seed=digest_byte(seed,secondary_owner[i]);
     for(unsigned i=0;i<PARTICLE_CAPACITY;++i) {
         seed=digest_byte(seed,particles[i].owner);
         if(particles[i].owner) {
@@ -613,12 +665,18 @@ PSX_MOD_CONSTRUCTOR(mmx4_register_coop_combat) {
     psx_mod_register_function_filter_plugin(COOP_ID,SOLID_CONTACT,solid_player_contact);
     psx_mod_register_function_filter_plugin(COOP_ID,0x8002AB74u,allocate_actor);
     psx_mod_register_function_filter_plugin(COOP_ID,0x8002ACA4u,allocate_actor);
+    psx_mod_register_function_filter_plugin(COOP_ID,0x8002AC0Cu,allocate_actor);
     psx_mod_register_function_filter_plugin(COOP_ID,0x8002ADBCu,allocate_actor);
     psx_mod_register_function_filter_plugin(COOP_ID,EFFECT_ALLOCATE,allocate_effect);
+    psx_mod_register_function_filter_plugin(COOP_ID,0x800AEAC0u,personal_effect);
+    psx_mod_register_function_filter_plugin(COOP_ID,0x800AED18u,personal_effect);
     psx_mod_register_function_filter_plugin(COOP_ID,0x800AF22Cu,personal_effect);
     psx_mod_register_function_filter_plugin(COOP_ID,0x800AEED8u,personal_effect);
+    psx_mod_register_function_filter_plugin(COOP_ID,0x800B2A3Cu,personal_effect);
     psx_mod_register_function_filter_plugin(COOP_ID,PARTICLE_ALLOCATE,allocate_particle);
-    psx_mod_register_function_filter_plugin(COOP_ID,PARTICLE_INITIALIZE,initialize_death_particle);
+    psx_mod_register_function_filter_plugin(COOP_ID,PARTICLE_INITIALIZE,initialize_character_particle);
+    psx_mod_register_function_filter_plugin(COOP_ID,0x8009485Cu,initialize_character_particle);
+    psx_mod_register_function_filter_plugin(COOP_ID,0x80098474u,initialize_character_particle);
     psx_mod_register_function_filter_plugin(COOP_ID,ARMOR_UPDATE,armor_world_update);
     psx_mod_register_function_filter_plugin(COOP_ID,0x80021234u,survivor_actor_pool);
     psx_mod_register_function_filter_plugin(COOP_ID,0x8002144Cu,survivor_actor_pool);
