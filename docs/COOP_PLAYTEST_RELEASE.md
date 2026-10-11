@@ -1,4 +1,19 @@
-# Co-op playtest 5
+# Co-op playtest 6
+
+Version: `v0.1.1-coop-playtest.6`. Windows ZIP and Linux x86_64 AppImage
+include PR23's updated framework together with the existing co-op support and
+controller UI. The shared account client's first-request socket initialization
+fix is merged in recomp-net PR42. Public builds disable private debug controls.
+
+Release build and package evidence is recorded here after artifact validation.
+Full Discord authorization and WAN gameplay remain pending owner/playtester
+confirmation. The original 28 feedback entries retain their historical
+qualification; the later Split Mushroom elevator report remains open item29.
+Item30's transport cause and fresh-process fix are qualified, with end-to-end
+Discord authorization still pending. Unified and Stacked remain defaults;
+online Split remains experimental.
+
+## Previous co-op playtest 5
 
 Version: `v0.1.1-coop-playtest.5`. Windows ZIP and Linux x86_64 AppImage
 are built from the same approved source and pinned framework/UI/network

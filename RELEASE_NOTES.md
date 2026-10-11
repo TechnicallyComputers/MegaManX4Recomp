@@ -1,4 +1,26 @@
-# Mega Man X4 Recompiled — v0.1.1-coop-playtest.5
+# Mega Man X4 Recompiled — v0.1.1-coop-playtest.6
+
+Windows ZIP and Linux x86_64 AppImage with the first online sign-in fix and
+the dependency updates from PR #23. Unified cameras and Stacked lifebars
+remain defaults; online Split cameras remain experimental.
+
+- The account client initializes its socket transport before its first HTTP
+  request. This fixes the Windows first-sign-in failure that reported an
+  unreachable lobby server before sending any request.
+- Integrates the updated framework renderer and guest-clocked audio while
+  retaining X4's co-op graphics banks, paired arrivals, independent audio,
+  two-player launcher/controller UI and release toolchain support.
+- Includes the updated shared lobby client's direct room latency probes.
+  Both peers must use this release and the same original disc.
+
+The sign-in transport regression is checked in a fresh process without a
+browser or credentials. Full Discord authorization and real WAN gameplay
+remain pending playtester confirmation. Split Mushroom's elevator, intermittent
+retry/menu netplay disconnects and broader Split performance remain open.
+Previous gameplay qualification is recorded below; this dependency release
+does not claim a new complete campaign playthrough.
+
+## Previous v0.1.1-coop-playtest.5
 
 Windows and Linux packages from the approved co-op gameplay source. This
 updates Windows with the fixes previously released in the Linux-only playtest4;
