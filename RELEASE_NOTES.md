@@ -1,4 +1,29 @@
-# Mega Man X4 Recompiled — v0.1.1-coop-playtest.4
+# Mega Man X4 Recompiled — v0.1.1-coop-playtest.5
+
+Windows and Linux packages from the approved co-op gameplay source. This
+updates Windows with the fixes previously released in the Linux-only playtest4;
+it introduces no further gameplay changes. The owner confirmed the paired
+opening-stage spawn looks good. Unified and Stacked remain defaults; online
+Split cameras remain experimental.
+
+- Both players warp in together, slightly side-by-side, at suitable stage,
+  section, retry and course-portal arrivals. Native terrain checks preserve
+  safe landings; authored doorway walking and special story spawns retain
+  their native lifecycle.
+- Includes the qualified boss-entry, survivor handoff, dash/effect ownership,
+  pause/dialogue, campaign-save, bike rendering, Lightning Web wall-jump and
+  Split train-background fixes described under playtest4 below.
+- Both platforms provide the two-player netplay lobby, separate local
+  controller assignments, optional Side by side HUD and default-on input
+  diagnostics. Private development controls are disabled in public packages.
+
+The original 28 regression entries are qualified. The later Split Mushroom
+elevator report is tracked as open item29, without an elevator-specific fix or
+qualification. Real WAN play, intermittent retry/menu netplay disconnects and
+broader Split performance remain open testing/investigation areas. Use the
+same release and original disc on both peers, with OpenGL and a fresh boot.
+
+## Previous v0.1.1-coop-playtest.4
 
 Linux AppImage co-op regression release, with the gameplay fixes validated
 on Windows. Unified remains the default, and Split cameras remain experimental.
@@ -20,7 +45,7 @@ on Windows. Unified remains the default, and Split cameras remain experimental.
 - Both Split views keep the train scenery moving during Slash Beast's fight.
 
 The stable [October 10 checklist](docs/COOP_PLAYTEST_FEEDBACK_20261010.md)
-tracks all 28 reports and their individual evidence; all entries are checked.
+tracks the original 28 reports and their individual evidence; those entries are checked.
 All 18 title checks pass. Native two-peer Split tests cover either player
 leading into Slash Beast's fight, with matching state checks through tick8672.
 The Linux production build also passes all 18 checks, AppImage layout/seeding,
