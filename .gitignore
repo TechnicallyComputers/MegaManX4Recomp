@@ -3,6 +3,7 @@
 /build-*/
 /out/
 /.happypath/
+prepared_disc
 
 # Recompiler output (derivative of copyrighted game code — regenerate locally)
 /generated/
